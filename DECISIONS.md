@@ -4,6 +4,12 @@ This file records decisions that affect future work. It does not turn planned fe
 
 本文记录会影响后续开发的决定，不把规划功能视为已经实现；当前功能边界见 [CURRENT_STATUS.md](CURRENT_STATUS.md)。
 
+## License / 许可证
+
+The owner chose GNU GPL version 3 only (`GPL-3.0-only`) for NodeBridge, with Copyright (C) 2026 Charles Hua. The project is public according to the owner. The full license text is in [LICENSE](LICENSE); third-party dependencies keep their own licenses.
+
+项目所有者为 NodeBridge 选择 GNU GPL 第 3 版且仅限该版本（`GPL-3.0-only`），版权行为 Copyright (C) 2026 Charles Hua。据项目所有者说明，仓库已公开。完整许可证见 [LICENSE](LICENSE)；第三方依赖保留各自的许可证。
+
 ## Platform and stack / 平台与技术栈
 
 Use Python 3.12 from `environment.yml`, PySide6 for the desktop UI, and Paramiko for SSH/SFTP. Verify Windows first while keeping platform-specific code replaceable where practical. Blocking network operations run outside the GUI thread.

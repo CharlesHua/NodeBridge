@@ -10,6 +10,12 @@ This README is the user guide. [ARCHITECTURE.md](ARCHITECTURE.md) explains the c
 
 本 README 是用户指南。[ARCHITECTURE.md](ARCHITECTURE.md) 说明当前代码结构；[CURRENT_STATUS.md](CURRENT_STATUS.md) 区分已实现与待完成内容；[DECISIONS.md](DECISIONS.md) 记录已确定的技术与数据安全选择；[HANDOFF.md](HANDOFF.md) 为下一位开发者提供接手入口。[AGENTS.md](AGENTS.md) 是编程代理的工作规则。
 
+## License / 许可证
+
+Copyright (C) 2026 Charles Hua. NodeBridge is licensed under the GNU General Public License, version 3 only (`GPL-3.0-only`); see [LICENSE](LICENSE). If you distribute a modified version, the GPL requires you to provide its corresponding source code under the same license. Third-party dependencies retain their own licenses.
+
+版权所有 (C) 2026 Charles Hua。NodeBridge 使用 GNU 通用公共许可证第 3 版，且仅限该版本（`GPL-3.0-only`）；全文见 [LICENSE](LICENSE)。分发修改版时，GPL 要求按相同许可证提供对应源代码。第三方依赖仍遵循各自的许可证。
+
 ## Current status / 当前状态
 
 **Implemented:** a two-column browser with local files on the left and remote files on the right. Each side has a path bar above a directory tree on the left and current-directory file list on the right, with an adjustable divider. File lists use compact rows without cell grid lines and right-align file sizes; common extensions such as `.txt` and `.py` have distinct icons. The File, View, and Help menus include a persistent local-site visibility setting. Files and directories can be copied by dragging between local and remote panes, from Windows Explorer into the remote list, or from the remote list into Windows Explorer. NodeBridge destination panes show an Overwrite, Skip, or Cancel dialog for same-name files; **Download to…** can target any local directory with the same dialog. File-list context menus and shortcuts provide copy/paste, rename, confirmed delete, and directory creation; local delete moves items to the Recycle Bin, while remote delete is permanent. The remote side supports SSH/SFTP navigation and refresh through background threads. A target can be reached by entering only its SSH alias from the current remote site, or by selecting a saved site, then disconnected to return to the jump site. The site manager saves named connection profiles, including optional passwords, in a per-user configuration file. The owner previously reported a successful direct connection; live jump, transfer, and new file-management operations have not yet been tested against servers. Move and transfer queue operations do not exist.

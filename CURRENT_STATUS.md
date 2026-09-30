@@ -12,9 +12,9 @@ Windows-first PySide6 GUI with local and remote tree/list panes; saved SFTP site
 
 ## Verification / 验证
 
-The project-local Conda environment runs Python 3.12.11. The latest local automated run completed 51 tests: 50 passed and one symlink-creation test was skipped because this Windows test environment cannot create the link. The owner previously reported a successful direct SSH connection. Live jump, transfer, rename, and deletion behavior has not yet been verified against the owner's servers. The directory has not been initialized as a Git repository or connected to GitHub.
+The project-local Conda environment runs Python 3.12.11. The latest local automated run completed 51 tests: 50 passed and one symlink-creation test was skipped because this Windows test environment cannot create the link. The owner previously reported a successful direct SSH connection. Live jump, transfer, rename, and deletion behavior has not yet been verified against the owner's servers. The initial Git commit is on `main`, with `origin/main` at the same commit. The owner reports that the repository is public. `LICENSE` and related documentation changes are pending a commit and push.
 
-项目内 Conda 环境使用 Python 3.12.11。最近一次本地自动化运行共 51 项测试：50 项通过，另有 1 项因该 Windows 测试环境无法创建符号链接而跳过。项目所有者此前反馈 SSH 直连成功。中转、传输、重命名和删除尚未在所有者的服务器上实测。当前目录尚未初始化为 Git 仓库，也未连接 GitHub。
+项目内 Conda 环境使用 Python 3.12.11。最近一次本地自动化运行共 51 项测试：50 项通过，另有 1 项因该 Windows 测试环境无法创建符号链接而跳过。项目所有者此前反馈 SSH 直连成功。中转、传输、重命名和删除尚未在所有者的服务器上实测。Git 初始提交已位于 `main`，`origin/main` 与之相同。据项目所有者说明，仓库已公开。`LICENSE` 及相关文档改动尚待提交和推送。
 
 ## Not implemented or not fully controlled / 未实现或无法完全控制
 
