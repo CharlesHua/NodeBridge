@@ -1,0 +1,1 @@
+"""NodeBridge desktop file browser."""
