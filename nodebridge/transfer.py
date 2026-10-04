@@ -158,6 +158,29 @@ def _copy_remote_file(sftp, source: str, target: str, approved_target=None) -> i
         raise
 
 
+def _copy_between_remote_files(source_sftp, target_sftp, source: str, target: str, approved_target=None) -> int:
+    overwrite = approved_target is not None
+    output = (
+        posixpath.join(posixpath.dirname(target), f".nodebridge-{uuid.uuid4().hex}.tmp")
+        if overwrite else target
+    )
+    created = False
+    try:
+        with source_sftp.open(source, "rb") as reader, target_sftp.open(output, "wbx") as writer:
+            created = True
+            count = _copy_stream(reader, writer)
+        if overwrite:
+            if not _same_version(_remote_stat(target_sftp, target), approved_target):
+                raise FileExistsError(f"目标文件在确认后发生变化，未覆盖：{target}")
+            target_sftp.posix_rename(output, target)
+        return count
+    except Exception:
+        if created:
+            with suppress(OSError):
+                target_sftp.remove(output)
+        raise
+
+
 def _download_file(source, target: Path, approved_target=None) -> int:
     overwrite = approved_target is not None
     temporary = None
@@ -378,6 +401,57 @@ def copy_remote_to_remote(
                 approved_target = existing
             bytes_copied += _copy_remote_file(sftp, str(item.source), target, approved_target)
             files += 1
+    return CopyResult(files, directories, bytes_copied, skipped)
+
+
+def copy_remote_between_sessions(
+    source_session: RemoteSession, target_session: RemoteSession,
+    sources: Iterable[str], destination: str,
+    progress: Progress = lambda _path: None,
+    resolve_conflict: ResolveConflict | None = None,
+) -> CopyResult:
+    """Stream a remote tree between two independent SFTP sessions."""
+    if source_session is target_session:
+        return copy_remote_to_remote(source_session, sources, destination, progress, resolve_conflict)
+    source_sftp, target_sftp = source_session.sftp, target_session.sftp
+    if not stat.S_ISDIR(target_sftp.stat(destination).st_mode or 0):
+        raise NotADirectoryError(destination)
+    roots = _roots(sources, source_remote=True, destination_local=False)
+    items: list[CopyItem] = []
+    for source in roots:
+        name = posixpath.basename(source.rstrip("/"))
+        items.extend(_scan_remote(source_sftp, source, (name,)))
+    files = directories = bytes_copied = skipped = 0
+    for item in items:
+        target = posixpath.join(destination, *item.parts)
+        progress(str(item.source))
+        existing = _remote_stat(target_sftp, target)
+        if item.is_dir:
+            if existing is None:
+                target_sftp.mkdir(target)
+                directories += 1
+            elif not stat.S_ISDIR(existing.st_mode or 0):
+                raise FileExistsError(f"目标已有同名文件，无法合并文件夹：{target}")
+            continue
+        approved_target = None
+        if existing is not None:
+            if not stat.S_ISREG(existing.st_mode or 0):
+                raise FileExistsError(f"目标不是普通文件，无法覆盖：{target}")
+            source_stat = source_sftp.lstat(str(item.source))
+            action = _decision(ConflictInfo(
+                str(item.source), source_stat.st_size, source_stat.st_mtime,
+                target, existing.st_size, existing.st_mtime,
+            ), resolve_conflict)
+            if action is ConflictAction.SKIP:
+                skipped += 1
+                continue
+            if action is ConflictAction.CANCEL:
+                return CopyResult(files, directories, bytes_copied, skipped, True)
+            approved_target = existing
+        bytes_copied += _copy_between_remote_files(
+            source_sftp, target_sftp, str(item.source), target, approved_target
+        )
+        files += 1
     return CopyResult(files, directories, bytes_copied, skipped)
 
 

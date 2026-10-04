@@ -16,6 +16,10 @@ Use Python 3.12 from `environment.yml`, PySide6 for the desktop UI, and Paramiko
 
 使用 `environment.yml` 中的 Python 3.12、PySide6 桌面界面和 Paramiko SSH/SFTP。首先验证 Windows，适用时让平台相关代码可替换。阻塞式网络操作放在界面线程之外。
 
+The Windows release must be self-contained and run without Python preinstalled on the target machine. The packaging method is still to be chosen and verified; see [TODO.md](TODO.md).
+
+Windows 发行包必须自包含，在目标机器未预装 Python 时也能运行。具体打包方式仍需选择和验证；见 [TODO.md](TODO.md)。
+
 ## SSH identity / SSH 身份校验
 
 Require known SSH host keys. Direct and saved-site tunnel connections use the local user's OpenSSH `known_hosts`; SSH-alias jumps use the jump site's OpenSSH configuration and `known_hosts`, require passwordless login, and enable strict host-key checking. Do not silently trust an unknown or changed key.
@@ -27,6 +31,12 @@ Require known SSH host keys. Direct and saved-site tunnel connections use the lo
 The owner approved temporary plaintext storage of saved-site passwords in the per-user `sites.json` outside the repository. This is a transitional decision, not a security target. A later change should migrate existing entries to an OS-protected credential store and keep that integration portable; do not invent custom encryption.
 
 项目所有者批准暂时把已保存站点密码明文存入仓库之外的用户 `sites.json`。这是过渡性决定，不是安全目标。后续应将已有记录迁移到操作系统保护的凭据库，并保持该集成可移植；不自行设计加密算法。
+
+## Terminal broadcast scope / 终端广播范围
+
+Each successful terminal connection batch creates an independent Terminal Group. Broadcast is permitted only to selected live sessions in the active group, at most one per node; no separate mode checkbox is required. Switching groups clears the draft. The current group and recipients must be visible before sending. The per-command exit status and identical-output grouping are separate future work.
+
+每批成功建立的终端连接都形成独立 Terminal Group。广播仅可发送给当前组内选中的活动会话，每节点最多一个；无需额外勾选模式。切换组会清空草稿。发送前必须清楚显示当前组及接收目标。逐命令退出状态和相同输出合并显示属于后续工作。
 
 ## File operations / 文件操作
 

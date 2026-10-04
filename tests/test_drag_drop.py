@@ -13,6 +13,8 @@ from PySide6.QtWidgets import QApplication, QTableWidgetItem
 
 from nodebridge.drag_drop import REMOTE_MIME, RemoteFileTable
 from nodebridge.local_browser import LocalBrowser
+from nodebridge.remote import DirectoryListing, RemoteEntry
+from nodebridge.worker_browser import WorkerBrowser
 
 
 class DragDropTests(unittest.TestCase):
@@ -93,3 +95,36 @@ class DragDropTests(unittest.TestCase):
             self.assertEqual(json.loads(bytes(mime.data(REMOTE_MIME)))["paths"], [
                 "/home/alice/notes.txt",
             ])
+
+    def test_worker_drop_on_folder_uses_that_directory(self):
+        browser = WorkerBrowser()
+        self.addCleanup(browser.close)
+        browser.path_edit.setText("/shared")
+        browser.set_connection("node02", DirectoryListing("/shared", (
+            RemoteEntry("output", "/shared/output", True, False, None, None),
+        )))
+        browser.show()
+        self.app.processEvents()
+        received = []
+        browser.table.localPathsDropped.connect(lambda *args: received.append(("local", *args)))
+        browser.table.remotePathsDropped.connect(lambda *args: received.append(("remote", *args)))
+        point = browser.table.visualItemRect(browser.table.item(0, 0)).center()
+
+        local = QMimeData()
+        local.setUrls([QUrl.fromLocalFile("C:/temp/input.py")])
+        event = QDropEvent(QPointF(point), Qt.DropAction.CopyAction, local,
+                           Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+        browser.table.dropEvent(event)
+        self.assertTrue(event.isAccepted())
+        self.assertEqual(received[-1], ("local", ["C:/temp/input.py"], "/shared/output"))
+
+        remote = QMimeData()
+        remote.setData(REMOTE_MIME, json.dumps({
+            "session": "jump-1", "paths": ["/shared/input.py"],
+        }).encode("utf-8"))
+        remote.setUrls([QUrl.fromLocalFile("C:/temp/staged.py")])
+        event = QDropEvent(QPointF(point), Qt.DropAction.CopyAction, remote,
+                           Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+        browser.table.dropEvent(event)
+        self.assertTrue(event.isAccepted())
+        self.assertEqual(received[-1], ("remote", "jump-1", ["/shared/input.py"], "/shared/output"))

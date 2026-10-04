@@ -10,6 +10,7 @@ from nodebridge.transfer import (
     copy_local_to_remote,
     copy_remote_to_local,
     copy_remote_to_remote,
+    copy_remote_between_sessions,
 )
 
 
@@ -78,6 +79,21 @@ class TransferTests(unittest.TestCase):
         self.assertTrue((self.download / "data/empty").is_dir())
         self.assertIn("wbx", self.sftp.write_modes)
 
+    def test_local_to_worker_ignores_different_same_named_jump_file(self):
+        source = self.local / "input.txt"
+        source.write_bytes(b"local version")
+        jump_root = Path(self.temporary.name) / "jump"
+        worker_root = Path(self.temporary.name) / "worker"
+        jump_root.mkdir()
+        worker_root.mkdir()
+        (jump_root / "input.txt").write_bytes(b"jump version")
+        worker = SimpleNamespace(sftp=DiskBackedSFTP(worker_root))
+
+        copy_local_to_remote(worker, [str(source)], "/")
+
+        self.assertEqual((worker_root / "input.txt").read_bytes(), b"local version")
+        self.assertEqual((jump_root / "input.txt").read_bytes(), b"jump version")
+
     def test_existing_destination_is_never_overwritten(self):
         source = self.local / "notes.txt"
         source.write_text("new", encoding="utf-8")
@@ -132,6 +148,26 @@ class TransferTests(unittest.TestCase):
         self.assertEqual(target.read_text(encoding="utf-8"), "new")
         with self.assertRaises(ValueError):
             copy_remote_to_remote(self.session, ["/source"], "/source")
+
+    def test_cross_session_copy_preserves_source_and_asks_before_overwrite(self):
+        other_root = Path(self.temporary.name) / "other"
+        other_root.mkdir()
+        (self.remote / "data").mkdir()
+        (self.remote / "data" / "result.txt").write_text("new", encoding="utf-8")
+        target_session = SimpleNamespace(sftp=DiskBackedSFTP(other_root))
+
+        first = copy_remote_between_sessions(self.session, target_session, ["/data"], "/")
+        self.assertEqual((first.files, first.directories), (1, 1))
+        self.assertEqual((other_root / "data" / "result.txt").read_text(encoding="utf-8"), "new")
+        self.assertTrue((self.remote / "data" / "result.txt").exists())
+
+        (self.remote / "data" / "result.txt").write_text("changed", encoding="utf-8")
+        skipped = copy_remote_between_sessions(
+            self.session, target_session, ["/data"], "/",
+            resolve_conflict=lambda _info: ConflictAction.SKIP,
+        )
+        self.assertEqual(skipped.skipped, 1)
+        self.assertEqual((other_root / "data" / "result.txt").read_text(encoding="utf-8"), "new")
 
     def test_upload_overwrite_and_skip_show_both_file_details(self):
         source = self.local / "notes.txt"
