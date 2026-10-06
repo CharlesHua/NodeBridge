@@ -261,10 +261,21 @@ def _roots(sources: Iterable[str], source_remote: bool, destination_local: bool)
     return roots
 
 
+def node_suffixed_name(name: str, alias: str, is_dir: bool) -> str:
+    """Place the source node after the top-level name's stem, preserving extensions."""
+    _valid_name(name)
+    _valid_name(alias)
+    stem, extension = (name, "") if is_dir or name.startswith(".") and name.count(".") == 1 else posixpath.splitext(name)
+    target = f"{stem}_{alias}{extension}"
+    _valid_name(target)
+    return target
+
+
 def copy_local_to_remote(
     session: RemoteSession, sources: Iterable[str], destination: str,
     progress: Progress = lambda _path: None,
     resolve_conflict: ResolveConflict | None = None,
+    source_labels: dict[str, str] | None = None,
 ) -> CopyResult:
     sftp = session.sftp
     roots = _roots(sources, source_remote=False, destination_local=False)
@@ -291,8 +302,11 @@ def copy_local_to_remote(
                 if not stat.S_ISREG(existing.st_mode or 0):
                     raise FileExistsError(f"目标不是普通文件，无法覆盖：{target}")
                 source_stat = Path(item.source).lstat()
+                label = str(item.source)
+                if source_labels and item.parts[0] in source_labels:
+                    label = posixpath.join(source_labels[item.parts[0]], *item.parts[1:])
                 action = _decision(ConflictInfo(
-                    str(item.source), source_stat.st_size, source_stat.st_mtime,
+                    label, source_stat.st_size, source_stat.st_mtime,
                     target, existing.st_size, existing.st_mtime,
                 ), resolve_conflict)
                 if action is ConflictAction.SKIP:
@@ -310,6 +324,7 @@ def copy_remote_to_local(
     session: RemoteSession, sources: Iterable[str], destination: str | Path,
     progress: Progress = lambda _path: None,
     resolve_conflict: ResolveConflict | None = None,
+    root_suffix: str | None = None,
 ) -> CopyResult:
     sftp = session.sftp
     target_root = Path(destination)
@@ -319,6 +334,8 @@ def copy_remote_to_local(
     items: list[CopyItem] = []
     for source in roots:
         name = posixpath.basename(source.rstrip("/"))
+        if root_suffix is not None:
+            name = node_suffixed_name(name, root_suffix, stat.S_ISDIR(sftp.lstat(source).st_mode or 0))
         items.extend(_scan_remote(sftp, source, (name,)))
     files = directories = bytes_copied = skipped = 0
     for item in items:
@@ -409,6 +426,7 @@ def copy_remote_between_sessions(
     sources: Iterable[str], destination: str,
     progress: Progress = lambda _path: None,
     resolve_conflict: ResolveConflict | None = None,
+    root_suffix: str | None = None,
 ) -> CopyResult:
     """Stream a remote tree between two independent SFTP sessions."""
     if source_session is target_session:
@@ -420,6 +438,8 @@ def copy_remote_between_sessions(
     items: list[CopyItem] = []
     for source in roots:
         name = posixpath.basename(source.rstrip("/"))
+        if root_suffix is not None:
+            name = node_suffixed_name(name, root_suffix, stat.S_ISDIR(source_sftp.lstat(source).st_mode or 0))
         items.extend(_scan_remote(source_sftp, source, (name,)))
     files = directories = bytes_copied = skipped = 0
     for item in items:

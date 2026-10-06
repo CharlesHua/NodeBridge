@@ -2,15 +2,15 @@
 
 ## Purpose / 项目目标
 
-NodeBridge is a desktop GUI project for managing files on SSH-accessible remote nodes. Windows is the initial target; support for other desktop platforms may be needed later. SSH/SFTP browsing, copy transfers, rename, directory creation, and confirmed delete are implemented. Dragging from local or jump to work nodes can copy in parallel, and work-node Delete can run in parallel after confirmation. A single-destination move engine exists but is not exposed by the current drag-and-delete UI. A persistent transfer queue and retry remain planned.
+NodeBridge is a desktop GUI project for managing files on SSH-accessible remote nodes. Windows is the initial target; support for other desktop platforms may be needed later. SSH/SFTP browsing, copy transfers, rename, directory creation, and confirmed delete are implemented. Dragging from local or jump to work nodes can copy in parallel; dragging from work nodes to jump or local collects copies with node-name suffixes. Work-node Delete can run in parallel after confirmation. A single-destination move engine exists but is not exposed by the current drag-and-delete UI. A persistent transfer queue and retry remain planned.
 
-NodeBridge 是管理 SSH 可访问远程节点文件的桌面 GUI 项目。初期面向 Windows，将来可能支持其他桌面平台。SSH/SFTP 浏览、复制传输、重命名、新建目录和经确认的删除已实现。从本地或跳板拖到工作节点时可并行复制，工作节点 Delete 经确认后可并行删除。底层已有单目标移动逻辑，但当前拖放和删除界面没有移动入口。持久传输队列和重试仍待实现。
+NodeBridge 是管理 SSH 可访问远程节点文件的桌面 GUI 项目。初期面向 Windows，将来可能支持其他桌面平台。SSH/SFTP 浏览、复制传输、重命名、新建目录和经确认的删除已实现。从本地或跳板拖到工作节点时可并行复制；从工作节点拖到跳板或本地时，按节点名后缀汇集副本。工作节点 Delete 经确认后可并行删除。底层已有单目标移动逻辑，但当前拖放和删除界面没有移动入口。持久传输队列和重试仍待实现。
 
 ## Confirmed technology / 已确定技术
 
-Use the Python 3.12 Conda environment defined in `environment.yml`, PySide6 for the desktop application, Paramiko for SSH/SFTP, and Qt background threads for blocking network operations. Run verification in the project-local Conda environment when available. Build and verify Windows first. Keep platform-specific integration, such as credential storage and packaging, behind clear boundaries so other platforms remain feasible; cross-platform support is not an implemented feature or an immediate release requirement. Site profiles are persisted in the user's configuration directory.
+Use the Python 3.12 Conda environment defined in `environment.yml`, PySide6 for the desktop application, Paramiko for SSH/SFTP, and Qt background threads for blocking network operations. Run verification in the project-local Conda environment when available. Build and verify Windows first. Keep platform-specific integration, such as packaging, behind clear boundaries so other platforms remain feasible; cross-platform support is not an implemented feature or an immediate release requirement. Source runs keep site profiles in the user's configuration directory; a future packaged portable executable uses a `data` directory beside itself.
 
-桌面应用使用 `environment.yml` 定义的 Python 3.12 Conda 环境，GUI 采用 PySide6，SSH/SFTP 使用 Paramiko，阻塞式网络操作放在 Qt 后台线程。可用时在项目本地 Conda 环境中验证。首先面向 Windows 开发和验证。将凭据存储、打包等平台相关集成保持在清晰边界内，为未来支持其他平台保留可能；跨平台支持尚未实现，也不是近期版本的交付要求。站点资料保存在用户配置目录。
+桌面应用使用 `environment.yml` 定义的 Python 3.12 Conda 环境，GUI 采用 PySide6，SSH/SFTP 使用 Paramiko，阻塞式网络操作放在 Qt 后台线程。可用时在项目本地 Conda 环境中验证。首先面向 Windows 开发和验证。将打包等平台相关集成保持在清晰边界内，为未来支持其他平台保留可能；跨平台支持尚未实现，也不是近期版本的交付要求。源码运行时站点资料保存在用户配置目录；未来打包的绿色版程序使用其旁边的 `data` 目录。
 
 The project must support self-contained Windows packaging: the application must run on a target machine without Python preinstalled. This is a release requirement, not a claim that a package already exists; see [TODO.md](TODO.md).
 
@@ -42,9 +42,9 @@ Remote filesystems may differ in permissions, symlinks, special files, metadata 
 
 ## Security / 安全
 
-Never put plaintext passwords in source, project files, tracked configuration, or ordinary logs. The owner has explicitly approved a temporary exception: saved site passwords may be stored as plaintext in the per-user configuration file outside the repository. Tell users where that file is and migrate it to OS-protected credential storage in a later stage; see [TODO.md](TODO.md). Do not invent cryptography. Never disable host-key verification by default. Make unknown or changed host keys an explicit decision for the user. Discuss any future major credential-storage changes with the owner.
+Never put plaintext passwords in source, tracked configuration, or ordinary logs. The owner explicitly chose FileZilla-like password modes instead of the Windows credential manager: no saved password, plaintext saving, or master-password-protected saving. Plaintext is permitted only in an untracked site file; clearly label that mode and show the file's location and risk. Source runs must keep that file outside the repository. Portable packaging may store it in an untracked `data` directory beside the executable. Use established cryptographic libraries, not home-made algorithms. Never disable host-key verification by default. Make unknown or changed host keys an explicit decision for the user. Discuss future major credential-storage changes with the owner.
 
-不得把明文密码写入源码、项目文件、受 Git 跟踪的配置或普通日志。项目所有者明确批准一项临时例外：已保存站点的密码可明文存于仓库之外的用户配置文件。应向用户说明文件位置，并在后续阶段迁移到操作系统保护的凭据存储；见 [TODO.md](TODO.md)。不自行设计加密方案。不得默认关闭主机密钥校验；未知或变更的主机密钥必须由用户明确处理。以后若要作出重大凭据存储变更，应与所有者讨论。
+不得把明文密码写入源码、受 Git 跟踪的配置或普通日志。项目所有者明确选择类似 FileZilla 的密码模式，不使用 Windows 凭据管理器：不保存密码、明文保存、主密码保护保存。明文只允许写入未受 Git 跟踪的站点文件；应清楚标示该模式，并显示文件位置和风险。源码运行时文件须位于仓库外，绿色版可放在程序旁未跟踪的 `data` 目录。使用成熟加密库，不自行设计加密算法。不得默认关闭主机密钥校验；未知或变更的主机密钥必须由用户明确处理。以后若要作出重大凭据存储变更，应与所有者讨论。
 
 ## Workflow / 开发流程
 

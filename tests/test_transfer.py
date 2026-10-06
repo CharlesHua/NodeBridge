@@ -11,6 +11,7 @@ from nodebridge.transfer import (
     copy_remote_to_local,
     copy_remote_to_remote,
     copy_remote_between_sessions,
+    node_suffixed_name,
 )
 
 
@@ -168,6 +169,35 @@ class TransferTests(unittest.TestCase):
         )
         self.assertEqual(skipped.skipped, 1)
         self.assertEqual((other_root / "data" / "result.txt").read_text(encoding="utf-8"), "new")
+
+    def test_collection_suffixes_only_top_level_file_and_folder(self):
+        (self.remote / "task.v1").mkdir()
+        (self.remote / "task.v1" / "nested.txt").write_text("node02", encoding="utf-8")
+        (self.remote / "result.txt").write_text("result", encoding="utf-8")
+        (self.remote / ".hidden").write_text("hidden", encoding="utf-8")
+        copied = copy_remote_to_local(
+            self.session, ["/task.v1", "/result.txt", "/.hidden"], self.download,
+            root_suffix="node02",
+        )
+        self.assertEqual(copied.files, 3)
+        self.assertEqual((self.download / "task.v1_node02" / "nested.txt").read_text(encoding="utf-8"), "node02")
+        self.assertEqual((self.download / "result_node02.txt").read_text(encoding="utf-8"), "result")
+        self.assertEqual((self.download / ".hidden_node02").read_text(encoding="utf-8"), "hidden")
+        self.assertEqual(node_suffixed_name("archive.tar.gz", "node02", False), "archive.tar_node02.gz")
+
+    def test_collection_between_sessions_preserves_node_suffix_and_conflicts(self):
+        target_root = Path(self.temporary.name) / "jump"
+        target_root.mkdir()
+        (self.remote / "task").mkdir()
+        (self.remote / "task" / "out.txt").write_text("worker", encoding="utf-8")
+        target_session = SimpleNamespace(sftp=DiskBackedSFTP(target_root))
+        copy_remote_between_sessions(self.session, target_session, ["/task"], "/", root_suffix="node02")
+        target = target_root / "task_node02" / "out.txt"
+        self.assertEqual(target.read_text(encoding="utf-8"), "worker")
+        (self.remote / "task" / "out.txt").write_text("changed", encoding="utf-8")
+        with self.assertRaises(FileExistsError):
+            copy_remote_between_sessions(self.session, target_session, ["/task"], "/", root_suffix="node02")
+        self.assertEqual(target.read_text(encoding="utf-8"), "worker")
 
     def test_upload_overwrite_and_skip_show_both_file_details(self):
         source = self.local / "notes.txt"

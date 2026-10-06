@@ -6,6 +6,7 @@ import json
 import posixpath
 import re
 import secrets
+import stat
 import tempfile
 import time
 import threading
@@ -70,6 +71,7 @@ from nodebridge.transfer import (
     copy_remote_to_local,
     copy_remote_to_remote,
     copy_remote_between_sessions,
+    node_suffixed_name,
 )
 from nodebridge.terminal_workspace import ANSI_ESCAPE, PLAIN_PROMPT, TerminalWorkspace
 from nodebridge.terminal_session import TerminalManager
@@ -250,7 +252,7 @@ class MainWindow(QMainWindow):
         quick.addWidget(QLabel("端口:"))
         quick.addWidget(self.port)
         self.connect_button = QPushButton("连接")
-        self.jump_button = QPushButton("添加工作节点…")
+        self.jump_button = QPushButton("添加间接节点…")
         self.disconnect_button = QPushButton("断开")
         self.connect_button.clicked.connect(self._connect)
         self.jump_button.clicked.connect(self._add_worker_alias)
@@ -310,6 +312,12 @@ class MainWindow(QMainWindow):
         self.log_panel.setVisible(self.show_log_action.isChecked())
         panes = QSplitter(Qt.Orientation.Horizontal)
         self.local = LocalBrowser()
+        self.local.pathChanged.connect(self._save_local_path)
+        saved_local_path = self._settings.value("files/local_path", "", type=str)
+        if saved_local_path and Path(saved_local_path).is_dir():
+            self.local.navigate(saved_local_path)
+        else:
+            self._save_local_path(self.local.current_path)
         self.local_tree = self.local.tree
         self.local_table = self.local.table
         self.local_tree.remotePathsDropped.connect(self._copy_remote_to_local)
@@ -320,12 +328,12 @@ class MainWindow(QMainWindow):
         remote_layout = QVBoxLayout(remote)
         remote_layout.setContentsMargins(2, 2, 2, 2)
         remote_layout.setSpacing(5)
-        self.jump_title = QLabel("跳板节点 · 尚未连接")
+        self.jump_title = QLabel("直连节点 · 尚未连接")
         self.jump_title.setFixedHeight(28)
         remote_layout.addWidget(self.jump_title)
 
         navigation = QHBoxLayout()
-        navigation.addWidget(QLabel("远程站点:"))
+        navigation.addWidget(QLabel("直连节点:"))
         self.path_edit = QLineEdit()
         self.path_edit.setPlaceholderText("远程 POSIX 路径")
         self.up_button = QPushButton("上一级")
@@ -340,11 +348,12 @@ class MainWindow(QMainWindow):
 
         self.remote_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabel("远程目录")
+        self.tree.setHeaderLabel("直连目录")
         self.tree.itemExpanded.connect(self._expand_tree)
         self.tree.itemClicked.connect(self._tree_clicked)
         self.table = RemoteFileTable()
         self.table.localPathsDropped.connect(self._copy_local_to_remote)
+        self.table.workerPathsDropped.connect(self._collect_workers_to_jump)
         self.table.preparedDragCancelled.connect(
             lambda: self.status.setText("拖出文件已准备好；如果刚才松开了鼠标，请再拖一次。")
         )
@@ -450,7 +459,7 @@ class MainWindow(QMainWindow):
         def open_one(node_id: str, host: RemoteSession | None):
             if node_id.startswith("worker:"):
                 if host is None:
-                    raise ConnectionError("请先连接跳板节点。")
+                    raise ConnectionError("请先连接直连节点。")
                 return RemoteSession.open_alias_shell(node_id.removeprefix("worker:"), host)
             return sources[node_id][1].open_shell()
 
@@ -469,7 +478,7 @@ class MainWindow(QMainWindow):
                     assigned[node_id] = None
                     continue
                 if jump is None:
-                    errors[node_id] = "请先连接跳板节点。"
+                    errors[node_id] = "请先连接直连节点。"
                     continue
                 # Leave space for other jump-host work; actual server limits vary.
                 host = next((root for root in roots if counts[id(root)] < 4), None)
@@ -929,6 +938,10 @@ class MainWindow(QMainWindow):
         self._settings.setValue("view/show_local_site", visible)
         self._settings.sync()
 
+    def _save_local_path(self, path: str) -> None:
+        self._settings.setValue("files/local_path", path)
+        self._settings.sync()
+
     def _set_operation_log_visible(self, visible: bool) -> None:
         self.log_panel.setVisible(visible)
         self._settings.setValue("view/show_operation_log", visible)
@@ -1014,11 +1027,11 @@ class MainWindow(QMainWindow):
         jump = self._session
         if jump is None:
             if manual:
-                QMessageBox.information(self, "发现工作节点", "请先连接跳板节点。")
+                QMessageBox.information(self, "发现间接节点", "请先连接直连节点。")
             return
         if self._parents:
             if manual:
-                QMessageBox.information(self, "发现工作节点", "请先返回跳板节点，再发现工作节点。")
+                QMessageBox.information(self, "发现间接节点", "请先返回直连节点，再发现间接节点。")
             return
         if self._job is not None:
             if manual:
@@ -1039,24 +1052,24 @@ class MainWindow(QMainWindow):
             else:
                 message = (
                     f"在 {jump.config.host} 未找到可列出的 SSH 别名或编号主机名。"
-                    "可用“添加别名…”手动连接，并检查跳板节点的主机名及名称解析。"
+                    "可用“添加别名…”手动连接，并检查直连节点的主机名及名称解析。"
                 )
                 self.worker_browser.summary.setText(message)
             self.status.setText(message)
             if manual:
-                QMessageBox.information(self, "发现工作节点", message)
+                QMessageBox.information(self, "发现间接节点", message)
 
-        self._run(jump.discover_work_nodes, success, "正在发现跳板节点可解析的工作主机…")
+        self._run(jump.discover_work_nodes, success, "正在发现直连节点可解析的工作主机…")
 
     def _add_worker_alias(self) -> None:
         if self._session is None or self._parents or self._job is not None:
             return
-        alias, accepted = QInputDialog.getText(self, "添加工作节点", "跳板节点上的 SSH 别名：")
+        alias, accepted = QInputDialog.getText(self, "添加间接节点", "直连节点上的 SSH 别名：")
         alias = alias.strip()
         if not accepted or not alias:
             return
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._@-]*", alias):
-            QMessageBox.warning(self, "工作节点", "别名只能包含字母、数字、点、下划线、@ 和连字符。")
+            QMessageBox.warning(self, "间接节点", "别名只能包含字母、数字、点、下划线、@ 和连字符。")
             return
         self.worker_browser.set_aliases([alias])
         self._sync_terminal_nodes()
@@ -1077,7 +1090,7 @@ class MainWindow(QMainWindow):
         aliases = [alias for alias in self.worker_browser.target_aliases() if alias not in self._workers]
         self.worker_browser._check_all(False)
         if not aliases:
-            self.status.setText("请勾选尚未连接的工作节点，或通过“添加别名…”输入节点。")
+            self.status.setText("请勾选尚未连接的间接节点，或通过“添加别名…”输入节点。")
             return
         path = self.worker_browser.path_edit.text().strip()
 
@@ -1146,12 +1159,12 @@ class MainWindow(QMainWindow):
                 self._worker_jumps[alias] = assigned[alias]
                 self.worker_browser.set_connection(alias, listing)
             self._sync_terminal_nodes()
-            self.status.setText(f"工作节点：新连接 {len(results)} 个，失败 {len(errors)} 个。")
+            self.status.setText(f"间接节点：新连接 {len(results)} 个，失败 {len(errors)} 个。")
             if errors:
                 lines = [f"{alias}: {message}" for alias, message in list(errors.items())[:8]]
-                QMessageBox.warning(self, "工作节点连接结果", "以下节点连接失败：\n" + "\n".join(lines))
+                QMessageBox.warning(self, "间接节点连接结果", "以下节点连接失败：\n" + "\n".join(lines))
 
-        self._run(work, success, f"正在经 {jump.config.host} 连接 {len(aliases)} 个工作节点…")
+        self._run(work, success, f"正在经 {jump.config.host} 连接 {len(aliases)} 个间接节点…")
 
     def _disconnect_selected_workers(self) -> None:
         if self._job is not None:
@@ -1177,14 +1190,14 @@ class MainWindow(QMainWindow):
                 self._worker_jumps.pop(alias, None)
                 self.worker_browser.set_connection(alias, None)
             self._sync_terminal_nodes()
-            self.status.setText(f"已断开 {len(aliases)} 个工作节点；关闭错误 {len(errors)} 个。")
+            self.status.setText(f"已断开 {len(aliases)} 个间接节点；关闭错误 {len(errors)} 个。")
 
-        self._run(work, success, f"正在断开 {len(aliases)} 个工作节点…")
+        self._run(work, success, f"正在断开 {len(aliases)} 个间接节点…")
 
     def _browse_workers(self, path: str) -> None:
         if self._job is not None or not path.startswith("/"):
             if not path.startswith("/"):
-                self.status.setText("工作节点路径必须是绝对路径。")
+                self.status.setText("间接节点路径必须是绝对路径。")
             return
         if self.worker_browser.mode.currentIndex() == 1:
             alias = self.worker_browser.nodes.currentItem()
@@ -1192,7 +1205,7 @@ class MainWindow(QMainWindow):
         else:
             names = sorted(self._workers)
         if not names:
-            self.status.setText("请先连接工作节点。")
+            self.status.setText("请先连接间接节点。")
             return
         sessions = {name: self._workers[name] for name in names}
 
@@ -1215,12 +1228,12 @@ class MainWindow(QMainWindow):
             for alias, listing in results.items():
                 self.worker_browser.set_listing(alias, listing)
             self.worker_browser.render()
-            self.status.setText(f"工作节点目录：已读取 {len(results)} 个，失败 {len(errors)} 个。")
+            self.status.setText(f"间接节点目录：已读取 {len(results)} 个，失败 {len(errors)} 个。")
             if errors:
                 lines = [f"{alias}: {message}" for alias, message in list(errors.items())[:8]]
-                QMessageBox.warning(self, "读取工作节点目录", "以下节点读取失败：\n" + "\n".join(lines))
+                QMessageBox.warning(self, "读取间接节点目录", "以下节点读取失败：\n" + "\n".join(lines))
 
-        self._run(work, success, f"正在读取 {len(names)} 个工作节点的 {path}…")
+        self._run(work, success, f"正在读取 {len(names)} 个间接节点的 {path}…")
 
     def _choose_worker_scope(self, verb: str) -> list[str]:
         connected = sorted(self._workers, key=str.casefold)
@@ -1228,7 +1241,7 @@ class MainWindow(QMainWindow):
         if current not in self._workers:
             current = connected[0] if connected else None
         if current is None:
-            QMessageBox.warning(self, "工作节点", "请先连接并选中一个工作节点。")
+            QMessageBox.warning(self, "间接节点", "请先连接并选中一个间接节点。")
             return []
         if len(connected) < 2:
             return [current]
@@ -1255,7 +1268,7 @@ class MainWindow(QMainWindow):
 
     def _drop_jump_on_workers(self, token: str, paths: list[str], destination: str) -> None:
         if self._session is None or token != str(id(self._session)):
-            QMessageBox.warning(self, "复制文件", "拖动来源不是当前跳板节点。")
+            QMessageBox.warning(self, "复制文件", "拖动来源不是当前直连节点。")
             return
         aliases = self._choose_worker_scope("复制")
         if aliases:
@@ -1263,6 +1276,115 @@ class MainWindow(QMainWindow):
                 "jump_to_workers", aliases, paths, destination,
                 self.worker_browser.rendered_path,
             ))
+
+    def _collect_workers_to_jump(self, token: str, paths: list[str], destination: str) -> None:
+        self._collect_worker_files(token, paths, destination, to_jump=True)
+
+    @staticmethod
+    def _inspect_collection_roots(
+        paths: list[str], sessions: dict[str, RemoteSession],
+    ) -> tuple[dict[str, list[str]], dict[str, BatchResult]]:
+        mapped: dict[str, list[str]] = {}
+        failures: dict[str, BatchResult] = {}
+
+        def inspect_one(alias: str, session: RemoteSession) -> list[str]:
+            return [node_suffixed_name(
+                posixpath.basename(path), alias,
+                stat.S_ISDIR(session.sftp.lstat(path).st_mode or 0),
+            ) for path in paths]
+
+        with ThreadPoolExecutor(max_workers=min(4, len(sessions))) as pool:
+            futures = {pool.submit(inspect_one, alias, session): alias for alias, session in sessions.items()}
+            for future in as_completed(futures):
+                alias = futures[future]
+                try:
+                    mapped[alias] = future.result()
+                except Exception as exc:
+                    failures[alias] = BatchResult(alias, error=f"{type(exc).__name__}: {exc}")
+        targets: dict[str, str] = {}
+        for alias in sessions:
+            for name in mapped.get(alias, []):
+                previous = targets.setdefault(name.casefold(), alias)
+                if previous != alias:
+                    raise FileExistsError(f"不同节点的目标名称冲突：{name}（{previous}、{alias}）")
+        return mapped, failures
+
+    def _collect_worker_files(
+        self, token: str, paths: list[str], destination: str, *, to_jump: bool,
+    ) -> None:
+        jump = self._session
+        if (jump is None or self._parents or self._job is not None
+                or token != self.worker_browser.drag_token):
+            return
+        if not paths or any(not path.startswith("/") for path in paths):
+            return
+        parents = {posixpath.dirname(path.rstrip("/")) for path in paths}
+        if len(parents) != 1 or not next(iter(parents)).startswith("/"):
+            QMessageBox.warning(self, "汇集文件", "请从同一个间接节点目录选择文件或文件夹。")
+            return
+        if to_jump and not destination.startswith("/"):
+            QMessageBox.warning(self, "汇集文件", "跳板目标必须是绝对路径。")
+            return
+        if not to_jump and not Path(destination).is_dir():
+            QMessageBox.warning(self, "汇集文件", "本地目标目录不存在。")
+            return
+        aliases = self._choose_worker_scope("汇集复制")
+        if not aliases:
+            return
+        sessions = {alias: self._workers[alias] for alias in aliases}
+        self._apply_conflict_choice = None
+        self._batch_mode_label = "汇集到跳板" if to_jump else "汇集到本地"
+        self.batch_results.setRowCount(0)
+
+        def work():
+            mapped, failures = self._inspect_collection_roots(paths, sessions)
+
+            def copy_one(alias: str, session: RemoteSession) -> BatchResult:
+                progress = lambda path: self.transferProgress.emit(f"{alias}：正在汇集 {path}")
+                if not to_jump:
+                    result = copy_remote_to_local(
+                        session, paths, destination, progress, self._resolve_conflict,
+                        root_suffix=alias,
+                    )
+                else:
+                    # Every worker gets a separate jump SFTP connection for writes.
+                    target = RemoteSession.connect(jump.config, self._jump_password)
+                    try:
+                        result = copy_remote_between_sessions(
+                            session, target, paths, destination, progress,
+                            self._resolve_conflict, root_suffix=alias,
+                        )
+                    finally:
+                        target.close()
+                return BatchResult(alias, copied=result)
+
+            for result in failures.values():
+                self.batchResultReady.emit(result)
+            good = {alias: session for alias, session in sessions.items() if alias in mapped}
+            copied = run_parallel(good, copy_one, self.batchResultReady.emit) if good else []
+            results = {result.alias: result for result in [*failures.values(), *copied]}
+            listing = None
+            if to_jump:
+                try:
+                    listing = jump.list_directory(self._path)
+                except Exception:
+                    pass
+            return [results[alias] for alias in aliases], listing
+
+        def success(value):
+            results, listing = value
+            if to_jump and listing is not None:
+                self._show_listing(listing)
+            elif not to_jump:
+                self.local.refresh()
+            complete = sum(result.complete for result in results)
+            self._notify_done(f"汇集完成：{complete}/{len(results)} 个节点成功；详情见下方结果表。")
+
+        self._run(
+            work, success, f"正在从 {len(aliases)} 个间接节点汇集文件…",
+            log_action=f"并行汇集（{'、'.join(aliases)}）：{self._log_paths(paths)} → {destination}；顶层名称加节点后缀",
+            log_result=self._batch_log_result,
+        )
 
     def _delete_worker_selection(self) -> None:
         names = self.worker_browser.selected_names()
@@ -1309,16 +1431,16 @@ class MainWindow(QMainWindow):
             sources = action.sources
         uses_workers = mode.endswith("to_workers") or mode.startswith("worker_") or mode == "delete_workers"
         if uses_workers and (not aliases or any(alias not in self._workers for alias in aliases)):
-            QMessageBox.warning(self, "批量操作", "请先勾选并连接全部要操作的工作节点。")
+            QMessageBox.warning(self, "批量操作", "请先勾选并连接全部要操作的间接节点。")
             return
         if mode in {"worker_to_jump", "worker_to_local", "worker_to_worker"} and len(aliases) != 1:
-            QMessageBox.warning(self, "批量操作", "从工作节点移动或复制时，请只勾选一个来源节点。")
+            QMessageBox.warning(self, "批量操作", "从间接节点移动或复制时，请只勾选一个来源节点。")
             return
         if mode == "worker_to_worker" and (not target_alias or target_alias not in self._workers or target_alias == aliases[0]):
-            QMessageBox.warning(self, "批量操作", "请选择另一个已连接的目标工作节点。")
+            QMessageBox.warning(self, "批量操作", "请选择另一个已连接的目标间接节点。")
             return
         if moving and mode.endswith("to_workers") and len(aliases) > 1:
-            QMessageBox.warning(self, "批量操作", "向多个工作节点只能复制；请取消“移动”选项。")
+            QMessageBox.warning(self, "批量操作", "向多个间接节点只能复制；请取消“移动”选项。")
             return
         if not sources:
             QMessageBox.warning(self, "批量操作", "请先在对应的文件列表中选中文件或文件夹。")
@@ -1330,7 +1452,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "批量操作", "远程目标目录必须是绝对路径。")
             return
         if mode in {"worker_to_jump", "worker_to_local", "worker_to_worker", "delete_workers"} and not worker_path.startswith("/"):
-            QMessageBox.warning(self, "批量操作", "工作节点当前路径必须是绝对路径。")
+            QMessageBox.warning(self, "批量操作", "间接节点当前路径必须是绝对路径。")
             return
         if mode in {"worker_to_local", "jump_to_local"} and not Path(destination).is_dir():
             QMessageBox.warning(self, "批量操作", "本地目标目录不存在。")
@@ -1338,7 +1460,7 @@ class MainWindow(QMainWindow):
         if mode == "delete_workers":
             choice = QMessageBox.question(
                 self, "确认批量删除",
-                f"在 {len(aliases)} 个工作节点上永久删除所选 {len(sources)} 个名称及其内容？\n"
+                f"在 {len(aliases)} 个间接节点上永久删除所选 {len(sources)} 个名称及其内容？\n"
                 "此操作不能撤销；缺失项目将作为该节点的失败结果报告。",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
@@ -1356,7 +1478,7 @@ class MainWindow(QMainWindow):
             if choice != QMessageBox.StandardButton.Yes:
                 return
         nodes = ({alias: self._workers[alias] for alias in aliases} if uses_workers
-                 else {"跳板节点": jump})
+                 else {"直连节点": jump})
         self._apply_conflict_choice = None
         self.batch_results.setRowCount(0)
         self._batch_mode_label = next(label for label, key in BatchDialog.MODES if key == mode)
@@ -1450,7 +1572,7 @@ class MainWindow(QMainWindow):
         source_text = self._log_paths(sources)
         target_text = "" if mode == "delete_workers" else f" → {destination}"
         self._run(
-            work, success, f"正在对 {len(nodes)} 个工作节点执行批量操作…",
+            work, success, f"正在对 {len(nodes)} 个间接节点执行批量操作…",
             log_action=f"并行{action_name}（{targets}）：{source_text}{target_text}",
             log_result=self._batch_log_result,
         )
@@ -1679,7 +1801,7 @@ class MainWindow(QMainWindow):
                 self._parents.append((jump, self._current_listing))
             self._session, listing = result
             self._sync_terminal_nodes()
-            self.jump_title.setText(f"{'跳板节点' if jump is None else '当前站点'} · {config.host}")
+            self.jump_title.setText(f"{'直连节点' if jump is None else '当前站点'} · {config.host}")
             self._show_connection_fields(config)
             self.tree.clear()
             self._show_listing(listing)
@@ -1741,7 +1863,7 @@ class MainWindow(QMainWindow):
             else:
                 self._session = None
                 self._jump_password = None
-                self.jump_title.setText("跳板节点 · 尚未连接")
+                self.jump_title.setText("直连节点 · 尚未连接")
                 self._current_listing = None
                 self._path = ""
                 self.path_edit.clear()
@@ -2237,6 +2359,9 @@ class MainWindow(QMainWindow):
     def _copy_remote_to_local(
         self, token: str, paths: list[str], destination: str, cached_paths: list[str]
     ) -> None:
+        if token == self.worker_browser.drag_token:
+            self._collect_worker_files(token, paths, destination, to_jump=False)
+            return
         session = self._session
         if session is None or self._job is not None or token != str(id(session)):
             return

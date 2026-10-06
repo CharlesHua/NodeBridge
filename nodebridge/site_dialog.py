@@ -6,9 +6,11 @@ from dataclasses import replace
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QFormLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -20,7 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from nodebridge.sites import Site, SiteStore
+from nodebridge.sites import LockedSiteStore, Site, SiteStore
 
 
 class SiteManagerDialog(QDialog):
@@ -32,10 +34,35 @@ class SiteManagerDialog(QDialog):
         self.setWindowTitle("NodeBridge — 站点管理器")
         self.resize(820, 500)
         self.store = store
-        self.sites = store.load()
+        try:
+            self.sites = store.load()
+        except LockedSiteStore:
+            while True:
+                password, accepted = QInputDialog.getText(
+                    parent, "解锁站点密码", "请输入 NodeBridge 主密码：", QLineEdit.EchoMode.Password,
+                )
+                if not accepted:
+                    choice = QMessageBox.question(
+                        parent, "忘记主密码", "是否清除全部已保存密码并保留站点资料？\n"
+                        "清除后无法恢复原密码。选择“否”将取消打开站点管理器。",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.No,
+                    )
+                    if choice != QMessageBox.StandardButton.Yes:
+                        raise ValueError("已取消解锁站点资料。")
+                    store.reset_encrypted_passwords()
+                    self.sites = store.load()
+                    break
+                try:
+                    store.unlock(password)
+                    self.sites = store.load()
+                    break
+                except ValueError as exc:
+                    QMessageBox.warning(parent, "解锁失败", str(exc))
         self.selected_site: Site | None = None
         self.connection_password: str | None = None
         self._editing_id: str | None = None
+        self._change_master = False
 
         layout = QVBoxLayout(self)
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -81,9 +108,26 @@ class SiteManagerDialog(QDialog):
         form.addRow("私钥路径（可选）", self.key_edit)
         form.addRow("密码", self.password_edit)
         right_layout.addLayout(form)
-        warning = QLabel("提示：密码当前会明文保存在本机用户配置文件中。")
-        warning.setWordWrap(True)
-        right_layout.addWidget(warning)
+        password_options = QHBoxLayout()
+        self.password_mode = QComboBox()
+        for label, mode in (("保存密码（明文）", "plain"), ("使用主密码加密", "master"), ("不保存密码", "none")):
+            self.password_mode.addItem(label, mode)
+        self.password_mode.setCurrentIndex(self.password_mode.findData(store.mode))
+        self.password_mode.currentIndexChanged.connect(self._update_password_mode)
+        password_options.addWidget(QLabel("密码保存："))
+        password_options.addWidget(self.password_mode, 1)
+        self.change_master_button = QPushButton("更换主密码…")
+        self.change_master_button.clicked.connect(self._request_master_change)
+        password_options.addWidget(self.change_master_button)
+        right_layout.addLayout(password_options)
+        self.password_note = QLabel()
+        self.password_note.setWordWrap(True)
+        right_layout.addWidget(self.password_note)
+        storage_location = QLabel(f"站点资料：{store.path}")
+        storage_location.setWordWrap(True)
+        storage_location.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        right_layout.addWidget(storage_location)
+        self._update_password_mode()
         right_layout.addStretch()
         splitter.addWidget(right)
         splitter.setSizes([300, 520])
@@ -105,6 +149,31 @@ class SiteManagerDialog(QDialog):
         self._set_form_enabled(False)
         if self.sites:
             self.site_list.setCurrentRow(0)
+
+    def _update_password_mode(self) -> None:
+        mode = self.password_mode.currentData()
+        self.change_master_button.setEnabled(mode == "master" and self.store.mode == "master")
+        self.password_note.setText({
+            "plain": "密码将明文保存在站点资料中；请勿分享该文件。",
+            "master": "密码经主密码加密后保存；忘记主密码将无法恢复已保存密码。",
+            "none": "密码不会写入磁盘；连接时需要重新输入。",
+        }[mode])
+
+    def _request_master_change(self) -> None:
+        self._change_master = True
+        QMessageBox.information(self, "更换主密码", "保存站点资料时将要求输入新主密码。")
+
+    def _new_master_password(self) -> str | None:
+        first, accepted = QInputDialog.getText(self, "设置主密码", "输入新主密码：", QLineEdit.EchoMode.Password)
+        if not accepted:
+            return None
+        second, accepted = QInputDialog.getText(self, "设置主密码", "再次输入主密码：", QLineEdit.EchoMode.Password)
+        if not accepted:
+            return None
+        if not first or first != second:
+            QMessageBox.warning(self, "设置主密码", "主密码不能为空，且两次输入必须一致。")
+            return None
+        return first
 
     def _set_form_enabled(self, enabled: bool) -> None:
         for widget in (
@@ -185,8 +254,15 @@ class SiteManagerDialog(QDialog):
 
     def _persist(self) -> bool:
         self._commit_form()
+        mode = self.password_mode.currentData()
+        master_password = None
+        if mode == "master" and (self.store.mode != "master" or self._change_master):
+            master_password = self._new_master_password()
+            if master_password is None:
+                return False
         try:
-            self.store.save(self.sites)
+            self.store.save(self.sites, mode=mode, master_password=master_password)
+            self._change_master = False
             return True
         except (OSError, ValueError) as exc:
             QMessageBox.warning(self, "站点保存失败", str(exc))
@@ -209,5 +285,13 @@ class SiteManagerDialog(QDialog):
         if not self._persist():
             return
         self.selected_site = site
-        self.connection_password = site.password or None
+        password = site.password
+        if self.store.mode == "none" and not password and not site.key_file:
+            password, accepted = QInputDialog.getText(
+                self, "站点密码", f"请输入“{site.name}”的连接密码：", QLineEdit.EchoMode.Password,
+            )
+            if not accepted:
+                self.selected_site = None
+                return
+        self.connection_password = password or None
         self.accept()

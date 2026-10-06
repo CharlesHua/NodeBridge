@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QDir, QModelIndex, Qt
+from PySide6.QtCore import QDir, QModelIndex, Qt, Signal
 from PySide6.QtWidgets import (
     QFileSystemModel,
     QHBoxLayout,
@@ -24,6 +24,8 @@ from nodebridge.drag_drop import LocalDirectoryTree, LocalFileTable
 
 
 class LocalFileModel(QFileSystemModel):
+    HEADERS = ("文件名", "文件大小", "文件类型", "最后修改")
+
     def __init__(self, parent: QWidget):
         super().__init__(parent)
         self._icons = FileIcons()
@@ -32,6 +34,12 @@ class LocalFileModel(QFileSystemModel):
         if role == Qt.ItemDataRole.DecorationRole and index.column() == 0 and not self.isDir(index):
             return self._icons.for_filename(self.fileName(index))
         return super().data(index, role)
+
+    def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.ItemDataRole.DisplayRole):
+        if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
+            if 0 <= section < len(self.HEADERS):
+                return self.HEADERS[section]
+        return super().headerData(section, orientation, role)
 
 
 class FileListDelegate(QStyledItemDelegate):
@@ -42,6 +50,8 @@ class FileListDelegate(QStyledItemDelegate):
 
 
 class LocalBrowser(QWidget):
+    pathChanged = Signal(str)
+
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         layout = QVBoxLayout(self)
@@ -120,6 +130,7 @@ class LocalBrowser(QWidget):
                 ancestor = ancestor.parent()
             self.tree.setCurrentIndex(index)
             self.tree.scrollTo(index)
+        self.pathChanged.emit(resolved)
         return True
 
     def refresh(self) -> None:

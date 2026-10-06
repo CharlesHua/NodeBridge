@@ -10,14 +10,14 @@ from PySide6.QtWidgets import (
 
 class BatchDialog(QDialog):
     MODES = (
-        ("跳板节点 → 工作节点", "jump_to_workers"),
-        ("本地 → 工作节点", "local_to_workers"),
-        ("本地 → 跳板节点", "local_to_jump"),
-        ("跳板节点 → 本地", "jump_to_local"),
-        ("单个工作节点 → 跳板节点", "worker_to_jump"),
-        ("单个工作节点 → 本地", "worker_to_local"),
-        ("单个工作节点 → 另一工作节点", "worker_to_worker"),
-        ("删除工作节点上的选中项目", "delete_workers"),
+        ("直连节点 → 间接节点", "jump_to_workers"),
+        ("本地 → 间接节点", "local_to_workers"),
+        ("本地 → 直连节点", "local_to_jump"),
+        ("直连节点 → 本地", "jump_to_local"),
+        ("单个间接节点 → 直连节点", "worker_to_jump"),
+        ("单个间接节点 → 本地", "worker_to_local"),
+        ("单个间接节点 → 另一间接节点", "worker_to_worker"),
+        ("删除间接节点上的选中项目", "delete_workers"),
     )
 
     def __init__(self, aliases: list[str], available_aliases: list[str], source_counts: tuple[int, int, int],
@@ -28,7 +28,7 @@ class BatchDialog(QDialog):
         self._paths = paths
         self._aliases = aliases
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(f"已勾选工作节点：{', '.join(aliases) if aliases else '无'}"))
+        layout.addWidget(QLabel(f"已勾选间接节点：{', '.join(aliases) if aliases else '无'}"))
         self.source_label = QLabel()
         layout.addWidget(self.source_label)
         form = QFormLayout()
@@ -40,7 +40,7 @@ class BatchDialog(QDialog):
         form.addRow("目标目录：", self.destination)
         self.target_node = QComboBox()
         self.target_node.addItems([alias for alias in available_aliases if alias not in aliases])
-        form.addRow("目标工作节点：", self.target_node)
+        form.addRow("目标间接节点：", self.target_node)
         self.move = QCheckBox("复制完整成功后删除来源（移动）")
         form.addRow("", self.move)
         self.parallelism = QSpinBox()
@@ -82,8 +82,8 @@ class BatchDialog(QDialog):
             self.move.setChecked(False)
         if mode == "delete_workers":
             self.move.setChecked(False)
-            self.note.setText("删除将永久移除所选工作节点上的项目及其内容，无法撤销。")
+            self.note.setText("删除将永久移除所选间接节点上的项目及其内容，无法撤销。")
         elif mode.endswith("to_workers") and len(self._aliases) > 1:
-            self.note.setText("向多个工作节点并行复制。暂不支持向多个节点移动；来源会保留。")
+            self.note.setText("向多个间接节点并行复制。暂不支持向多个节点移动；来源会保留。")
         else:
             self.note.setText("同名文件将逐项询问。移动只在完整复制成功且来源未变化后删除来源。")

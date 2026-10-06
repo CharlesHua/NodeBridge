@@ -1,4 +1,5 @@
 import os
+import stat
 import tempfile
 import threading
 import time
@@ -9,7 +10,8 @@ import paramiko
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QDir, QPointF, QSettings, Qt
+from PySide6.QtGui import QDropEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLineEdit, QMessageBox
 
@@ -314,6 +316,44 @@ class WindowTests(unittest.TestCase):
             self.assertEqual(self.window.local.current_path, str(child.resolve()))
             self.window.local._up()
             self.assertEqual(self.window.local.current_path, str(Path(temporary).resolve()))
+
+    def test_local_directory_restores_even_when_pane_starts_hidden(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            child = Path(temporary) / "child"
+            child.mkdir()
+            self.assertTrue(self.window.local.navigate(str(child)))
+            self.window.show_local_action.setChecked(False)
+            reopened = MainWindow(QSettings(self.settings_path, QSettings.Format.IniFormat))
+            self.assertFalse(reopened.show_local_action.isChecked())
+            self.assertEqual(Path(reopened.local.current_path), child.resolve())
+            reopened.show_local_action.setChecked(True)
+            self.assertEqual(Path(reopened.local.current_path), child.resolve())
+            reopened.close()
+
+    def test_missing_saved_local_directory_falls_back_to_home(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            self.assertTrue(self.window.local.navigate(temporary))
+        reopened = MainWindow(QSettings(self.settings_path, QSettings.Format.IniFormat))
+        self.assertEqual(Path(reopened.local.current_path), Path(QDir.homePath()).resolve())
+        reopened.close()
+
+    def test_file_list_headers_use_the_same_chinese_labels(self):
+        self.assertEqual(self.window.jump_title.text(), "直连节点 · 尚未连接")
+        self.assertEqual(self.window.jump_button.text(), "添加间接节点…")
+        expected = ["文件名", "文件大小", "文件类型", "最后修改"]
+        local = self.window.local.file_model
+        self.assertEqual([
+            local.headerData(column, Qt.Orientation.Horizontal)
+            for column in range(4)
+        ], expected)
+        self.assertEqual([
+            self.window.table.horizontalHeaderItem(column).text()
+            for column in range(4)
+        ], expected)
+        self.assertEqual([
+            self.window.worker_browser.table.horizontalHeaderItem(column).text()
+            for column in range(3)
+        ], expected[:3])
 
     def test_view_menu_remembers_local_site_visibility(self):
         self.assertEqual([action.text() for action in self.window.menuBar().actions()], [
@@ -840,6 +880,100 @@ class WindowTests(unittest.TestCase):
         self.assertIs(copy.call_args.args[0], helper)
         self.assertIs(copy.call_args.args[1], worker)
         self.assertEqual(copy.call_args.args[2:4], (["/shared/input.py"], "/shared/output"))
+
+    def test_collect_workers_to_local_uses_suffix_and_parallel_results(self):
+        jump = Mock()
+        self.window._session = jump
+        for alias in ("node02", "node03"):
+            worker = Mock()
+            worker.sftp.lstat.return_value.st_mode = stat.S_IFREG
+            self.window._workers[alias] = worker
+            self.window.worker_browser.set_connection(alias, DirectoryListing("/shared", ()))
+        with tempfile.TemporaryDirectory() as destination, \
+             patch.object(self.window, "_choose_worker_scope", return_value=["node02", "node03"]), \
+             patch("nodebridge.window.copy_remote_to_local", return_value=CopyResult(1, 0, 4)) as copy:
+            self.window._copy_remote_to_local(
+                self.window.worker_browser.drag_token, ["/shared/result.txt"], destination, [],
+            )
+            self._finish_job()
+        self.assertEqual(copy.call_count, 2)
+        self.assertEqual({call.kwargs["root_suffix"] for call in copy.call_args_list}, {"node02", "node03"})
+        self.assertEqual(self.window.batch_results.rowCount(), 2)
+        self.assertIn("并行汇集（node02、node03）", self.window.operation_log.toPlainText())
+
+    def test_collect_workers_to_jump_uses_independent_jump_sftp(self):
+        jump = Mock()
+        jump.config = NodeConfig("jump.example.invalid", 22, "alice")
+        jump.list_directory.return_value = DirectoryListing("/shared", ())
+        self.window._session = jump
+        worker = Mock()
+        worker.sftp.lstat.return_value.st_mode = stat.S_IFDIR
+        self.window._workers["node02"] = worker
+        self.window.worker_browser.set_connection("node02", DirectoryListing("/shared", ()))
+        helper = Mock()
+        with patch("nodebridge.window.RemoteSession.connect", return_value=helper), \
+             patch("nodebridge.window.copy_remote_between_sessions", return_value=CopyResult(1, 1, 4)) as copy:
+            self.window._collect_workers_to_jump(
+                self.window.worker_browser.drag_token, ["/shared/task"], "/shared",
+            )
+            self._finish_job()
+        copy.assert_called_once()
+        self.assertIs(copy.call_args.args[0], worker)
+        self.assertIs(copy.call_args.args[1], helper)
+        self.assertEqual(copy.call_args.args[2:4], (["/shared/task"], "/shared"))
+        self.assertEqual(copy.call_args.kwargs["root_suffix"], "node02")
+        helper.close.assert_called_once()
+
+    def test_collect_reports_missing_source_on_one_node_without_blocking_others(self):
+        self.window._session = Mock()
+        good = Mock()
+        good.sftp.lstat.return_value.st_mode = stat.S_IFREG
+        missing = Mock()
+        missing.sftp.lstat.side_effect = FileNotFoundError("missing on node03")
+        self.window._workers.update({"node02": good, "node03": missing})
+        with tempfile.TemporaryDirectory() as destination, \
+             patch.object(self.window, "_choose_worker_scope", return_value=["node02", "node03"]), \
+             patch("nodebridge.window.copy_remote_to_local", return_value=CopyResult(1, 0, 4)) as copy:
+            self.window._copy_remote_to_local(
+                self.window.worker_browser.drag_token, ["/shared/result.txt"], destination, [],
+            )
+            self._finish_job()
+        copy.assert_called_once()
+        self.assertIn("node03：FileNotFoundError", self.window.operation_log.toPlainText())
+        self.assertEqual(self.window.batch_results.rowCount(), 2)
+
+    def test_worker_drag_asks_scope_after_local_destination_is_chosen(self):
+        self.window._session = Mock()
+        worker = Mock()
+        worker.sftp.lstat.return_value.st_mode = stat.S_IFREG
+        self.window._workers["node02"] = worker
+        browser = self.window.worker_browser
+        browser.path_edit.setText("/shared")
+        browser.set_connection("node02", DirectoryListing("/shared", (
+            RemoteEntry("result.txt", "/shared/result.txt", False, False, 5, None),
+        )))
+        browser.table.selectRow(0)
+        with tempfile.TemporaryDirectory() as destination, \
+             patch.object(self.window, "_choose_worker_scope", return_value=["node02"]) as scope, \
+             patch("nodebridge.window.copy_remote_to_local", return_value=CopyResult(1, 0, 5)) as copy, \
+             patch("nodebridge.worker_browser.QDrag") as drag_type:
+            browser.table.startDrag(Qt.DropAction.CopyAction)
+            scope.assert_not_called()
+            copy.assert_not_called()
+            mime = drag_type.return_value.setMimeData.call_args.args[0]
+            self.window.local.navigate(destination)
+            event = QDropEvent(
+                QPointF(999, 999), Qt.DropAction.CopyAction, mime,
+                Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+            )
+            self.window.local_table.dropEvent(event)
+            self.assertTrue(event.isAccepted())
+            scope.assert_not_called()
+            self.app.processEvents()
+            scope.assert_called_once_with("汇集复制")
+            self._finish_job()
+            copy.assert_called_once()
+            self.assertTrue(Path(copy.call_args.args[2]).samefile(destination))
 
     def test_worker_delete_uses_selected_names_on_chosen_nodes(self):
         jump = Mock()

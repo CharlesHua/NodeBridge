@@ -28,9 +28,9 @@ Require known SSH host keys. Direct and saved-site tunnel connections use the lo
 
 ## Credentials / 凭据
 
-The owner approved temporary plaintext storage of saved-site passwords in the per-user `sites.json` outside the repository. This is a transitional decision, not a security target. A later change should migrate existing entries to an OS-protected credential store and keep that integration portable; do not invent custom encryption.
+The owner chose FileZilla-like site password modes in place of Windows Credential Manager: plaintext, no-save, and master-password-encrypted storage. The plaintext option remains explicit; source runs keep the file outside the repository. A future frozen portable executable uses a `data` directory beside itself. The encryption implementation uses the established cryptography library (Scrypt and Fernet); changing to master mode rewrites the current site file without plaintext passwords. Historical backups are outside this migration.
 
-项目所有者批准暂时把已保存站点密码明文存入仓库之外的用户 `sites.json`。这是过渡性决定，不是安全目标。后续应将已有记录迁移到操作系统保护的凭据库，并保持该集成可移植；不自行设计加密算法。
+项目所有者选择类似 FileZilla 的站点密码模式，代替 Windows 凭据管理器：明文、不保存和主密码加密保存。明文模式须由用户明确选择；源码运行时文件位于仓库外。未来冻结打包的绿色版程序使用其旁边的 `data` 目录。加密实现使用成熟的 cryptography 库（Scrypt 和 Fernet）；切换主密码模式会重写当前站点文件并移除明文密码，但不处理历史备份。
 
 ## Terminal broadcast scope / 终端广播范围
 

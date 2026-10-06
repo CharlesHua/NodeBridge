@@ -10,6 +10,7 @@ __pycache__/
 build/
 dist/
 sites.json
+/data/
 .env
 .env.*
 *.pem

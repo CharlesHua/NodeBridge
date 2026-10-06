@@ -128,3 +128,78 @@ class DragDropTests(unittest.TestCase):
         browser.table.dropEvent(event)
         self.assertTrue(event.isAccepted())
         self.assertEqual(received[-1], ("remote", "jump-1", ["/shared/input.py"], "/shared/output"))
+
+    def test_worker_drag_reaches_local_and_jump_targets(self):
+        browser = WorkerBrowser()
+        self.addCleanup(browser.close)
+        browser.path_edit.setText("/shared")
+        browser.set_connection("node02", DirectoryListing("/shared", (
+            RemoteEntry("result.txt", "/shared/result.txt", False, False, 5, None),
+        )))
+        browser.table.selectRow(0)
+        with patch("nodebridge.worker_browser.QDrag") as drag_type:
+            browser.table.startDrag(Qt.DropAction.CopyAction)
+        mime = drag_type.return_value.setMimeData.call_args.args[0]
+        self.assertEqual(json.loads(bytes(mime.data(REMOTE_MIME))), {
+            "session": browser.drag_token, "paths": ["/shared/result.txt"],
+        })
+
+        local = LocalBrowser()
+        received_local = []
+        local.table.remotePathsDropped.connect(lambda *args: received_local.append(args))
+        event = QDropEvent(QPointF(999, 999), Qt.DropAction.CopyAction, mime,
+                           Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+        local.table.dropEvent(event)
+        self.assertTrue(event.isAccepted())
+        self.assertEqual(received_local, [])
+        self.app.processEvents()
+        self.assertEqual(received_local[0][:2], (browser.drag_token, ["/shared/result.txt"]))
+
+        jump = RemoteFileTable()
+        jump.current_path = "/destination"
+        received_jump = []
+        jump.workerPathsDropped.connect(lambda *args: received_jump.append(args))
+        event = QDropEvent(QPointF(999, 999), Qt.DropAction.CopyAction, mime,
+                           Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+        jump.dropEvent(event)
+        self.assertTrue(event.isAccepted())
+        self.assertEqual(received_jump, [])
+        self.app.processEvents()
+        self.assertEqual(received_jump, [(browser.drag_token, ["/shared/result.txt"], "/destination")])
+
+    def test_worker_drag_starts_without_preparing_or_prompting(self):
+        browser = WorkerBrowser()
+        self.addCleanup(browser.close)
+        browser.path_edit.setText("/shared")
+        browser.set_connection("node02", DirectoryListing("/shared", (
+            RemoteEntry("result.txt", "/shared/result.txt", False, False, 5, None),
+        )))
+        browser.table.selectRow(0)
+        with patch("nodebridge.worker_browser.QDrag") as drag_type:
+            browser.table.startDrag(Qt.DropAction.CopyAction)
+        mime = drag_type.return_value.setMimeData.call_args.args[0]
+        self.assertFalse(mime.hasUrls())
+        self.assertEqual(json.loads(bytes(mime.data(REMOTE_MIME)))["paths"], ["/shared/result.txt"])
+
+    def test_worker_drop_on_local_directory_tree_is_deferred(self):
+        browser = LocalBrowser()
+        self.addCleanup(browser.close)
+        received = []
+        browser.tree.remotePathsDropped.connect(lambda *args: received.append(args))
+        mime = QMimeData()
+        mime.setData(REMOTE_MIME, json.dumps({
+            "session": "workers:test", "paths": ["/shared/result.txt"],
+        }).encode("utf-8"))
+        index = browser.directory_model.index(browser.current_path)
+        self.assertTrue(index.isValid())
+        event = QDropEvent(QPointF(20, 20), Qt.DropAction.CopyAction, mime,
+                           Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+        with patch.object(browser.tree, "indexAt", return_value=index):
+            browser.tree.dropEvent(event)
+        self.assertTrue(event.isAccepted())
+        self.assertEqual(received, [])
+        self.app.processEvents()
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0][:2], ("workers:test", ["/shared/result.txt"]))
+        self.assertEqual(Path(received[0][2]), Path(browser.current_path))
+        self.assertEqual(received[0][3], [])

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Callable
 
-from PySide6.QtCore import QMimeData, Qt, QUrl, Signal
+from PySide6.QtCore import QMimeData, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDrag
 from PySide6.QtWidgets import QAbstractItemView, QTableView, QTableWidget, QTreeView
 
@@ -40,6 +40,7 @@ def local_urls(mime: QMimeData) -> list[str]:
 
 class RemoteFileTable(QTableWidget):
     localPathsDropped = Signal(list, str)
+    workerPathsDropped = Signal(str, list, str)
     preparedDragCancelled = Signal()
 
     def __init__(self):
@@ -74,20 +75,24 @@ class RemoteFileTable(QTableWidget):
             self.preparedDragCancelled.emit()
 
     def dragEnterEvent(self, event) -> None:
-        if local_urls(event.mimeData()):
+        payload = remote_payload(event.mimeData())
+        if local_urls(event.mimeData()) or payload is not None and payload[0].startswith("workers:"):
             event.acceptProposedAction()
         else:
             event.ignore()
 
     def dragMoveEvent(self, event) -> None:
-        if local_urls(event.mimeData()):
+        payload = remote_payload(event.mimeData())
+        if local_urls(event.mimeData()) or payload is not None and payload[0].startswith("workers:"):
             event.acceptProposedAction()
         else:
             event.ignore()
 
     def dropEvent(self, event) -> None:
         paths = local_urls(event.mimeData())
-        if not paths:
+        payload = remote_payload(event.mimeData())
+        worker = payload is not None and payload[0].startswith("workers:")
+        if not paths and not worker:
             event.ignore()
             return
         target = self.current_path
@@ -97,7 +102,14 @@ class RemoteFileTable(QTableWidget):
             directory = self.item(row, 0)
             if directory is not None and directory.data(Qt.ItemDataRole.UserRole + 1):
                 target = directory.data(PATH_ROLE)
-        self.localPathsDropped.emit(paths, target)
+        if worker:
+            token, sources = payload
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
+            QTimer.singleShot(0, lambda: self.workerPathsDropped.emit(token, sources, target))
+            return
+        else:
+            self.localPathsDropped.emit(paths, target)
         event.setDropAction(Qt.DropAction.CopyAction)
         event.accept()
 
@@ -134,7 +146,13 @@ class LocalFileTable(QTableView):
         index = self.indexAt(event.position().toPoint())
         if index.isValid() and self.browser.file_model.isDir(index):
             destination = self.browser.file_model.filePath(index)
-        self.remotePathsDropped.emit(payload[0], payload[1], destination, local_urls(event.mimeData()))
+        token, sources = payload
+        if token.startswith("workers:"):
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
+            QTimer.singleShot(0, lambda: self.remotePathsDropped.emit(token, sources, destination, []))
+            return
+        self.remotePathsDropped.emit(token, sources, destination, local_urls(event.mimeData()))
         event.setDropAction(Qt.DropAction.CopyAction)
         event.accept()
 
@@ -169,6 +187,12 @@ class LocalDirectoryTree(QTreeView):
             event.ignore()
             return
         destination = self.browser.directory_model.filePath(index)
-        self.remotePathsDropped.emit(payload[0], payload[1], destination, local_urls(event.mimeData()))
+        token, sources = payload
+        if token.startswith("workers:"):
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
+            QTimer.singleShot(0, lambda: self.remotePathsDropped.emit(token, sources, destination, []))
+            return
+        self.remotePathsDropped.emit(token, sources, destination, local_urls(event.mimeData()))
         event.setDropAction(Qt.DropAction.CopyAction)
         event.accept()

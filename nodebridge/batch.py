@@ -40,7 +40,7 @@ def run_parallel(
     if max_workers < 1:
         raise ValueError("并发数至少为 1。")
     if not nodes:
-        raise ValueError("没有选择已连接的工作节点。")
+        raise ValueError("没有选择已连接的间接节点。")
     results: dict[str, BatchResult] = {}
     with ThreadPoolExecutor(max_workers=min(max_workers, len(nodes))) as pool:
         futures = {pool.submit(operation, alias, node): alias for alias, node in nodes.items()}

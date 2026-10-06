@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import posixpath
-
-from PySide6.QtCore import QSignalBlocker, Qt, Signal
+from PySide6.QtCore import QMimeData, QSignalBlocker, Qt, Signal
+from PySide6.QtGui import QDrag
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -22,7 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from nodebridge.drag_drop import local_urls, remote_payload
+from nodebridge.drag_drop import REMOTE_MIME, local_urls, remote_payload
 from nodebridge.file_icons import FileIcons
 from nodebridge.node_check_tree import NodeCheckTree
 from nodebridge.remote import DirectoryListing, RemoteEntry
@@ -38,11 +39,34 @@ class WorkerFileTable(QTableWidget):
     def __init__(self, browser: "WorkerBrowser") -> None:
         super().__init__(0, 5)
         self.browser = browser
+        self.setDragEnabled(True)
         self.setAcceptDrops(True)
-        self.setDragDropMode(QAbstractItemView.DragDropMode.DropOnly)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
+        self.setDefaultDropAction(Qt.DropAction.CopyAction)
+
+    def startDrag(self, _supported_actions) -> None:
+        base = self.browser.rendered_path
+        if not base.startswith("/"):
+            return
+        rows = sorted(index.row() for index in self.selectionModel().selectedRows(0))
+        names = [self.item(row, 0).text() for row in rows if self.item(row, 0)]
+        if not names:
+            return
+        paths = [posixpath.join(base, name) for name in names]
+        mime = QMimeData()
+        mime.setData(REMOTE_MIME, json.dumps({
+            "session": self.browser.drag_token,
+            "paths": paths,
+        }).encode("utf-8"))
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        drag.exec(Qt.DropAction.CopyAction)
 
     def dragEnterEvent(self, event) -> None:
-        if remote_payload(event.mimeData()) or local_urls(event.mimeData()):
+        payload = remote_payload(event.mimeData())
+        if payload is not None and payload[0] == self.browser.drag_token:
+            event.ignore()
+        elif payload is not None or local_urls(event.mimeData()):
             event.acceptProposedAction()
         else:
             event.ignore()
@@ -53,6 +77,9 @@ class WorkerFileTable(QTableWidget):
     def dropEvent(self, event) -> None:
         payload = remote_payload(event.mimeData())
         paths = local_urls(event.mimeData())
+        if payload is not None and payload[0] == self.browser.drag_token:
+            event.ignore()
+            return
         if payload is None and not paths:
             event.ignore()
             return
@@ -77,6 +104,10 @@ class WorkerBrowser(QWidget):
     disconnectRequested = Signal()
     browseRequested = Signal(str)
 
+    @property
+    def drag_token(self) -> str:
+        return f"workers:{id(self)}"
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._aliases: list[str] = []
@@ -95,7 +126,7 @@ class WorkerBrowser(QWidget):
         title_widget.setFixedHeight(28)
         title = QHBoxLayout(title_widget)
         title.setContentsMargins(0, 0, 0, 0)
-        title.addWidget(QLabel("工作节点"))
+        title.addWidget(QLabel("间接节点"))
         self.mode = QComboBox()
         self.mode.addItems(["合并查看", "单节点查看"])
         self.mode.currentIndexChanged.connect(self._mode_changed)
@@ -124,7 +155,7 @@ class WorkerBrowser(QWidget):
         navigation = QHBoxLayout()
         navigation.addWidget(QLabel("共同路径:"))
         self.path_edit = QLineEdit()
-        self.path_edit.setPlaceholderText("工作节点上的绝对路径")
+        self.path_edit.setPlaceholderText("间接节点上的绝对路径")
         self.path_edit.returnPressed.connect(self._browse_path)
         navigation.addWidget(self.path_edit, 1)
         self.up_button = QPushButton("上一级")
@@ -148,7 +179,7 @@ class WorkerBrowser(QWidget):
         self.tree.header().setFixedHeight(23)
         self.tree.itemClicked.connect(self._tree_clicked)
         self.table = WorkerFileTable(self)
-        self.table.setHorizontalHeaderLabels(["文件名", "大小", "类型", "所在节点", "差异"])
+        self.table.setHorizontalHeaderLabels(["文件名", "文件大小", "文件类型", "所在节点", "差异"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -165,7 +196,7 @@ class WorkerBrowser(QWidget):
             panes.addWidget(widget)
         panes.setSizes([150, 190, 500])
         layout.addWidget(panes, 1)
-        self.summary = QLabel("连接跳板节点后，可发现其 SSH 配置及主机列表中的节点。")
+        self.summary = QLabel("连接直连节点后，可发现其 SSH 配置及主机列表中的节点。")
         layout.addWidget(self.summary)
 
     def set_busy(self, busy: bool, connected: bool) -> None:
@@ -296,7 +327,7 @@ class WorkerBrowser(QWidget):
         self._rendered_path = path
         if self.mode.currentIndex() == 1:
             aliases = [self._focused] if self._focused in self._connected else []
-            self.tree.setHeaderLabel(f"{self._focused or '工作节点'} 目录")
+            self.tree.setHeaderLabel(f"{self._focused or '间接节点'} 目录")
         else:
             aliases = sorted(self._connected)
             self.tree.setHeaderLabel("合并目录")

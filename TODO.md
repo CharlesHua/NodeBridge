@@ -6,17 +6,21 @@ As the final release stage, provide a self-contained **portable Windows edition 
 
 在最后的发行阶段，**优先提供免安装绿色 Windows 版**：解压即可运行，目标机器无需安装器或预装 Python。在干净的 Windows 机器或等效环境中验证，并说明解压、启动与更新方法。安装版可选，且排在绿色版之后。
 
-Add collection from multiple work nodes to the jump or local site. Define collision handling, destination layout, and safe source deletion for a future multi-source move before enabling it.
+Drag-copy collection from connected work nodes to the jump or local pane now uses a node-name suffix on each selected top-level item. Multi-source move and safe source deletion remain planned; do not delete any source after collection until that behavior is explicitly designed and confirmed.
 
-加入从多个工作节点向跳板或本地汇集文件的功能。启用多来源移动前，先确定同名冲突处理、目标目录布局和安全删除来源的规则。
+现已支持从已连接工作节点拖动复制到跳板或本地，并在每个选中顶层项目名称后加节点名后缀。多来源移动及安全删除来源仍待实现；在明确设计和确认相关行为前，汇集后不删除任何来源。
+
+Support dragging work-node files to Windows Explorer/Desktop without prompting or staging a complete copy before the drop. Keep source-node selection after the destination is known where the Windows integration permits it, and preserve portable packaging.
+
+支持将工作节点文件拖到 Windows 资源管理器／桌面，且拖动前不弹范围框、不预先缓存完整副本。在 Windows 集成方式允许取得目标后再选择来源节点，并保持绿色版可用。
 
 Expose single-destination move and the remaining work-node transfer directions through drag-and-drop or context actions, with explicit source-deletion confirmation. Avoid restoring a separate batch-operation button.
 
 通过拖放或右键操作提供单目标移动及工作节点的其他传输方向，并明确确认来源删除；不要恢复独立的批量操作按钮。
 
-Replace plaintext site passwords with the operating system's protected credential store. Migrate existing entries from `sites.json`, then remove plaintext secrets from the old file. Keep the storage interface portable for possible future desktop platforms.
+Site Manager now offers plaintext, no-save, and master-password-encrypted modes. Converting an existing `sites.json` to the master-password mode removes plaintext from the current file. Before portable release, verify data-directory behavior in a built executable, migration from a source installation, and how historical file backups are handled.
 
-把明文站点密码迁移到操作系统保护的凭据库。从 `sites.json` 迁移已有记录后，删除旧文件中的明文机密信息。存储接口需为将来可能支持的其他桌面平台保留可替换性。
+站点管理器现提供明文、不保存及主密码加密三种模式。把已有 `sites.json` 切换到主密码模式后，当前文件不再包含明文密码。绿色版发行前仍需在打包程序中验证 `data` 目录行为、从源码版本迁移资料的方法，以及历史文件备份的处理方式。
 
 ### Terminal follow-up / 终端后续工作
 
@@ -60,7 +64,7 @@ After the core group workflow is stable, consider showing effectively identical 
 4. Phase 3: basic file operations and safety behavior — copy, rename, create directory, and confirmed delete implemented; a one-destination move engine exists but has no current UI entry point.
 5. Phase 4: drag-and-drop and transfer progress or queue — copy drag-and-drop implemented; progress bar and queue remain planned.
 6. Phase 5: multiple configured nodes and switching — site profiles, sequential SSH jumps, and focused or merged work-node browsing implemented.
-7. Phase 6: concurrent multi-node copy distribution and confirmed delete — implemented with up to four node tasks at once, without a four-node total limit; multi-source collection, a transfer queue, and transfer-task retry remain planned.
+7. Phase 6: concurrent multi-node copy distribution, suffix-based drag collection, and confirmed delete — implemented with up to four node tasks at once, without a four-node total limit; a transfer queue, transfer-task retry, and multi-source move remain planned.
 8. Phase 7: robustness and UX refinement — ongoing.
 9. Phase 8: interactive remote SSH terminal with PTY — implemented for ordinary Shell interaction; full-screen terminal emulation remains planned.
 10. Phase 9: simultaneous node terminals — implemented; detached and persistent remote sessions remain planned.
@@ -74,7 +78,7 @@ After the core group workflow is stable, consider showing effectively identical 
 4. 阶段 3：基本文件操作与安全行为——已实现复制、重命名、新建目录及经确认的删除；单目标移动底层已有实现，但当前没有界面入口。
 5. 阶段 4：拖放与传输进度或队列——已实现拖动复制；进度条与队列仍待实现。
 6. 阶段 5：多个节点的配置与切换——已支持站点资料、逐级 SSH 中转及单节点聚焦或合并浏览。
-7. 阶段 6：多节点并行复制分发和经确认的删除——一次最多并行处理四个节点任务，节点总数不限制为四个；多来源汇集、传输队列和传输任务重试仍待实现。
+7. 阶段 6：多节点并行复制分发、按后缀拖动汇集及经确认的删除——一次最多并行处理四个节点任务，节点总数不限制为四个；传输队列、任务重试和多来源移动仍待实现。
 8. 阶段 7：健壮性与交互完善——进行中。
 9. 阶段 8：带 PTY 的交互式 SSH 远程终端——普通 Shell 交互已实现；全屏终端仿真仍待实现。
 10. 阶段 9：多个节点的终端同时运行——已实现；可分离且持久的远程会话仍待实现。
