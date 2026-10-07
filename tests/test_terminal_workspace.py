@@ -82,6 +82,40 @@ class TerminalWorkspaceTests(unittest.TestCase):
         self.assertEqual(workspace.group_name(group_id), "实验组(cft02..04)")
         self.assertEqual(workspace.terminal_tabs.tabText(0), "实验组 · cft02 · 终端1")
 
+    def test_fifty_terminal_tabs_and_broadcast_stay_bounded(self):
+        workspace = self.workspace
+        nodes = [(f"worker:cft{index:02}", f"cft{index:02}") for index in range(1, 51)]
+        workspace.set_nodes(nodes)
+        group_id = workspace.create_group([node_id for node_id, _ in nodes])
+        for node_id, _ in nodes:
+            workspace.add_terminal(node_id, group_id=group_id)
+        workspace.show_group_combined(group_id)
+        workspace.resize(1800, 850)
+        workspace.show()
+        self.app.processEvents()
+
+        self.assertEqual(len(workspace.broadcast_targets()), 50)
+        self.assertIn("50 个目标", workspace.broadcast_summary.text())
+        self.assertIn("cft01..50", workspace.broadcast_summary.text())
+        self.assertIn("cft50", workspace.broadcast_summary.toolTip())
+        self.assertLess(workspace.broadcast_summary.minimumSizeHint().width(), 1000)
+        self.assertEqual(workspace.terminal_tabs.count(), 51)
+        tabs = workspace.terminal_tabs
+        bar = tabs.tabBar()
+        self.assertTrue(bar.usesScrollButtons())
+        for width in (1800, 1200, 1800):
+            workspace.resize(width, 850)
+            self.app.processEvents()
+            self.assertLessEqual(bar.sizeHint().width(), tabs.width())
+            self.assertLessEqual(workspace.tab_list_button.geometry().left() - bar.geometry().right(), 3)
+        workspace.begin_broadcast_round(group_id, "ls", workspace.broadcast_targets())
+        for session_id in workspace.broadcast_targets().values():
+            workspace.append_output(session_id, "ls\nresult\n")
+        workspace._refresh_combined_views()
+        self.app.processEvents()
+        self.assertLessEqual(workspace.tab_list_button.geometry().left() - bar.geometry().right(), 3)
+        self.assertLess(workspace.minimumSizeHint().width(), 1920)
+
     def test_tab_dropdown_lists_all_open_views_and_selects_by_widget(self):
         workspace = self.workspace
         workspace.set_nodes([("worker:cft02", "cft02"), ("worker:cft03", "cft03")])
@@ -400,6 +434,20 @@ class TerminalWorkspaceTests(unittest.TestCase):
         pane = workspace.terminal_tabs.widget(0)
         self.assertIn("user@cft01:~$ test\nresult\n", pane.output.toPlainText())
         self.assertNotIn("tesx", pane.output.toPlainText())
+
+    def test_progress_updates_rewrite_previous_lines(self):
+        workspace = self.workspace
+        workspace.set_nodes([("primary", "cft01")])
+        session_id = workspace.add_terminal("primary")
+        workspace.append_output(session_id, "qt | 0%\r\nprompt-toolkit | 0%\r\n")
+        workspace.append_output(session_id, "\x1b[2A\rqt | 46%\x1b[K\x1b[2B")
+        workspace.append_output(session_id, "\x1b[1A\rprompt-toolkit | 22%\x1b[K\x1b[1B")
+        self.assertEqual(workspace._views[session_id].combined_text(),
+                         "qt | 46%\nprompt-toolkit | 22%\n")
+        workspace.append_output(session_id, "\x1b[1A\r")
+        workspace.append_output(session_id, "\x1b[2Kprompt-toolkit | 100%\x1b[1B")
+        self.assertEqual(workspace._views[session_id].combined_text(),
+                         "qt | 46%\nprompt-toolkit | 100%\n")
 
     def test_visible_cursor_and_remote_bell(self):
         workspace = self.workspace

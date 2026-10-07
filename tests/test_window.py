@@ -94,6 +94,12 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(detail.count("FileNotFoundError: missing"), 1)
         self.assertIn("cft05：PermissionError: denied", detail)
 
+    def test_batch_log_compacts_consecutive_failed_nodes(self):
+        results = [BatchResult(f"cft{i:02d}", error="FileNotFoundError: missing") for i in range(2, 6)]
+        state, detail = self.window._batch_log_result((results, None, {}))
+        self.assertEqual(state, "失败")
+        self.assertIn("cft02..05：FileNotFoundError: missing", detail)
+
     def test_listing_populates_tree_and_file_table(self):
         listing = DirectoryListing(
             "/home/alice",
@@ -448,6 +454,8 @@ class WindowTests(unittest.TestCase):
         self._finish_job()
         session.open_shell.assert_called_once_with()
         self.assertEqual(terminal.node_tree.topLevelItem(0).childCount(), 1)
+        self.assertEqual(terminal.terminal_tabs.count(), 1)
+        self.assertEqual(terminal._combined_views, {})
         pane = terminal.terminal_tabs.widget(0)
         channel.recv_ready.return_value = True
         channel.recv.return_value = b"shell ready\r\n"
@@ -476,7 +484,7 @@ class WindowTests(unittest.TestCase):
         terminal.terminal_tabs.tabCloseRequested.emit(0)
         channel.close.assert_not_called()
         terminal._item_clicked(terminal.node_tree.topLevelItem(0).child(0), 0)
-        self.assertEqual(terminal.terminal_tabs.count(), 2)
+        self.assertEqual(terminal.terminal_tabs.count(), 1)
 
         terminal.disconnect_terminal_button.click()
         channel.close.assert_called_once_with()
@@ -538,6 +546,7 @@ class WindowTests(unittest.TestCase):
             self._finish_job()
         self.assertEqual(terminal.group_selector.count(), 2)
         self.assertEqual(len(terminal._groups[terminal.active_group_id()].members), 1)
+        self.assertEqual(terminal.terminal_tabs.count(), 4)
         for index in (1, 2):
             terminal.node_tree.topLevelItem(index).setCheckState(2, Qt.CheckState.Checked)
         terminal.disconnect_checked_button.click()
@@ -601,10 +610,13 @@ class WindowTests(unittest.TestCase):
         terminal = self.window.terminal_workspace
         second_group = terminal.active_group_id()
         self.assertNotEqual(first_group, second_group)
+        self.assertEqual(terminal._combined_views, {})
         terminal.group_selector.setCurrentIndex(terminal.group_selector.findData(first_group))
-        self.assertIs(terminal.terminal_tabs.currentWidget(), terminal._combined_views[first_group])
+        self.assertIs(terminal.terminal_tabs.currentWidget(),
+                      terminal._views[terminal.group_sessions(first_group)[0]])
         terminal.group_selector.setCurrentIndex(terminal.group_selector.findData(second_group))
-        self.assertIs(terminal.terminal_tabs.currentWidget(), terminal._combined_views[second_group])
+        self.assertIs(terminal.terminal_tabs.currentWidget(),
+                      terminal._views[terminal.group_sessions(second_group)[0]])
         with patch("nodebridge.window.QMessageBox.question",
                    return_value=QMessageBox.StandardButton.Yes):
             terminal.disconnect_group_button.click()
@@ -692,7 +704,7 @@ class WindowTests(unittest.TestCase):
         self._finish_job()
         self.assertEqual(self.window.worker_browser.checked_aliases(), [])
         self.assertEqual(self.window.terminal_workspace.node_tree.topLevelItemCount(), 2)
-        self.assertEqual(self.window.terminal_workspace.terminal_tabs.count(), 2)
+        self.assertEqual(self.window.terminal_workspace.terminal_tabs.count(), 1)
         channel.close.assert_not_called()
 
     def test_jump_disconnect_closes_terminal_only_worker(self):
@@ -828,12 +840,13 @@ class WindowTests(unittest.TestCase):
         browser._check_all(True)
 
         with patch.object(self.window, "_choose_worker_scope", return_value=["node02", "node03"]), \
-             patch("nodebridge.window.copy_local_to_remote", return_value=CopyResult(1, 0, 5)) as copy:
-            browser.table.localPathsDropped.emit(["C:/temp/input.py"], "/shared/output")
+             patch("nodebridge.window.copy_local_to_remote", return_value=CopyResult(0, 1, 5)) as copy:
+            browser.table.localPathsDropped.emit(["C:/temp/project"], "/shared/output")
             self._finish_job()
 
         self.assertEqual(copy.call_count, 2)
         self.assertEqual({call.args[0] for call in copy.call_args_list}, set(self.window._workers.values()))
+        self.assertTrue(all(call.args[1] == ["C:/temp/project"] for call in copy.call_args_list))
         self.assertTrue(all(call.args[2] == "/shared/output" for call in copy.call_args_list))
         log = self.window.operation_log.toPlainText()
         self.assertIn("并行复制（node02、node03）", log)

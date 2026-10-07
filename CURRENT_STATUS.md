@@ -22,9 +22,9 @@ The Files and Terminal tabs provide switchable main views. The Terminal view sho
 
 “文件”和“终端”标签页可切换主视图。终端页显示跳板站点和已发现的工作节点别名，不依赖文件页工作节点 SFTP 连接。每节点可打开多个独立 SSH PTY，也可批量连接或断开。每批成功连接都会创建独立 Terminal Group；单独新建终端会形成自己的组。组选择器和成员勾选列表决定广播目标，每节点最多一个终端。无需勾选广播模式；切换组会清空草稿。发送前程序检查空闲 Shell 的实际目录；目录不同或未知时需要确认，常见破坏性命令还需额外确认。发送路径会重新验证组成员关系，其他组终端不能混入。各终端可直接输入并保留独立的 ANSI 彩色输出。文件页断开工作节点不会关闭其终端；断开跳板连接才会关闭。关闭单个终端标签只隐藏其视图，“断开终端”会关闭通道。状态栏报告发送情况，不代表命令执行完成。
 
-New groups show their Combined tab automatically. The former “Combined view” button is replaced by “Disconnect current group”, which asks for confirmation and closes only that group's terminals. Groups and terminals have no fixed application count limit. Work-node terminals are spread across terminal-only jump SSH connections after a conservative per-connection budget; a code-2 session-open refusal triggers a bounded retry on a fresh connection. This still needs verification against the owner's cluster.
+Groups with multiple connected terminals show their Combined tab by default; a single-terminal group shows its individual terminal instead. The former “Combined view” button is replaced by “Disconnect current group”, which asks for confirmation and closes only that group's terminals. Groups and terminals have no fixed application count limit. Work-node terminals are spread across terminal-only jump SSH connections after a conservative per-connection budget; a code-2 session-open refusal triggers a bounded retry on a fresh connection. This still needs verification against the owner's cluster.
 
-新建终端组后自动显示该组的联合视图。“联合显示”按钮已替换为“断开当前组”，确认后仅关闭该组终端。程序没有固定的组数或终端数上限。工作节点终端超过保守的单连接额度后分配到专供终端的额外跳板连接；遇到代码 2 的会话打开拒绝时，会换新连接有限次重试。这仍需在项目所有者的集群上实测。
+连接了多个终端的组默认显示联合视图；只有一个终端的组直接显示该终端。“联合显示”按钮已替换为“断开当前组”，确认后仅关闭该组终端。程序没有固定的组数或终端数上限。工作节点终端超过保守的单连接额度后分配到专供终端的额外跳板连接；遇到代码 2 的会话打开拒绝时，会换新连接有限次重试。这仍需在项目所有者的集群上实测。
 
 A drop-down button at the right end of the Terminal tab bar lists every currently open terminal and Combined tab with its full title and marks the active tab. The list is rebuilt when opened, so renamed groups and hidden tabs are reflected immediately.
 
@@ -34,9 +34,9 @@ The group name can be edited; its generated node suffix compresses contiguous nu
 
 组名可编辑；自动生成的节点后缀会缩写连续编号。各终端标签以所属组名开头，广播区在终端区下方对齐。对于每次广播，只读“联合显示”按节点顺序直接拼接各终端原有的提示符、命令回显及输出，不额外添加标题，并保留 ANSI 字色。识别到 Shell 提示符返回时结束该节点反馈，否则以下一次广播为边界。每节点每次命令最多显示 20,000 个字符，联合视图保留最近 100 次广播；各独立终端保留原有滚动历史。对于可识别的提示符，检查目录所用的 `pwd -P` 探针回显及其返回提示符会从可见终端中隐藏。相同输出去重和可靠的退出状态检测仍待实现。
 
-Terminal assistance now includes a blinking caret, system bell on remote BEL or a left-boundary key at a recognizable plain Bash prompt, scrollback that stays in place while output arrives, Shift+PageUp/PageDown, and font zoom with PTY resize. The scrollback retains up to 10,000 lines.
+Terminal assistance now includes a blinking caret, system bell on remote BEL or a left-boundary key at a recognizable plain Bash prompt, scrollback that stays in place while output arrives, Shift+PageUp/PageDown, and font zoom with PTY resize. Common ANSI cursor-up/down and erase-line sequences can update earlier progress lines in place. The scrollback retains up to 10,000 lines; full-screen terminal rendering remains planned.
 
-终端辅助功能现包括闪烁光标、远端 BEL 或普通 Bash 提示符输入左边界触发的系统提示音、查看历史时保持滚动位置、Shift+PageUp/PageDown 翻页，以及同步改变 PTY 尺寸的字号缩放。历史输出最多保留一万行。
+终端辅助功能现包括闪烁光标、远端 BEL 或普通 Bash 提示符输入左边界触发的系统提示音、查看历史时保持滚动位置、Shift+PageUp/PageDown 翻页，以及同步改变 PTY 尺寸的字号缩放。常见 ANSI 上下移行和清除行序列可在原位置更新进度行。历史输出最多保留一万行；全屏终端渲染仍待实现。
 
 Tab in an individual terminal now reaches the remote Shell instead of moving Qt focus, enabling that Shell's normal command and path completion; remote BEL still sounds locally. The broadcast input regains focus after a successful send. Eight helper buttons appear in one toolbar row with command-and-purpose labels; narrow windows use the toolbar overflow menu. They replace the draft in the last focused command entry, either the broadcast field or a live terminal, without executing it. They provide `cd`, `mkdir`, `rm -r`, `cd ..`, `ls`, `ls -a`, `ls -lh`, and `pwd`. The Combined view adds a blank line when all recipients of a broadcast have finished replying.
 

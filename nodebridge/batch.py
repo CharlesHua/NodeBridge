@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 import posixpath
+import re
 import stat
 from typing import Callable, Mapping, TypeVar
 
@@ -14,6 +15,34 @@ from nodebridge.remote import RemoteSession
 
 
 T = TypeVar("T")
+
+
+def compact_node_aliases(aliases: list[str]) -> str:
+    """Shorten consecutive numbered aliases for display without changing their order."""
+    labels: list[str] = []
+    index = 0
+    while index < len(aliases):
+        first = re.fullmatch(r"(.*?)(\d+)", aliases[index])
+        end = index
+        if first:
+            prefix, digits = first.groups()
+            previous = int(digits)
+            while end + 1 < len(aliases):
+                following = re.fullmatch(r"(.*?)(\d+)", aliases[end + 1])
+                if not following or following.group(1) != prefix:
+                    break
+                next_digits = following.group(2)
+                if len(next_digits) != len(digits) or int(next_digits) != previous + 1:
+                    break
+                end += 1
+                previous += 1
+        if end - index >= 2:
+            last_digits = re.fullmatch(r"(.*?)(\d+)", aliases[end]).group(2)
+            labels.append(f"{aliases[index]}..{last_digits}")
+        else:
+            labels.extend(aliases[index:end + 1])
+        index = end + 1
+    return "、".join(labels)
 
 
 @dataclass(frozen=True)

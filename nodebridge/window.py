@@ -46,7 +46,7 @@ from PySide6.QtWidgets import (
 )
 
 from nodebridge.local_browser import LocalBrowser
-from nodebridge.batch import BatchResult, run_parallel, source_snapshot
+from nodebridge.batch import BatchResult, compact_node_aliases, run_parallel, source_snapshot
 from nodebridge.batch_dialog import BatchDialog
 from nodebridge.drag_drop import REMOTE_MIME, RemoteFileTable, local_urls, remote_payload
 from nodebridge.conflict_dialog import ConflictDialog
@@ -588,7 +588,7 @@ class MainWindow(QMainWindow):
                 size = self.terminal_workspace.terminal_size(session_id)
                 if size is not None:
                     self._terminal_manager.resize(session_id, *size)
-            if group_id is not None:
+            if group_id is not None and len(ready) > 1:
                 self.terminal_workspace.show_group_combined(group_id)
             self.status.setText(
                 f"SSH Shell：连接 {len(channels)} 个，失败 {len(errors)} 个；Enter 可发送命令。"
@@ -1382,7 +1382,7 @@ class MainWindow(QMainWindow):
 
         self._run(
             work, success, f"正在从 {len(aliases)} 个间接节点汇集文件…",
-            log_action=f"并行汇集（{'、'.join(aliases)}）：{self._log_paths(paths)} → {destination}；顶层名称加节点后缀",
+            log_action=f"并行汇集（{compact_node_aliases(aliases)}）：{self._log_paths(paths)} → {destination}；顶层名称加节点后缀",
             log_result=self._batch_log_result,
         )
 
@@ -1567,7 +1567,7 @@ class MainWindow(QMainWindow):
             complete = sum(result.complete for result in results)
             self._notify_done(f"批量操作完成：{complete}/{len(results)} 个节点成功；详情见下方结果表。")
 
-        targets = "、".join(nodes)
+        targets = compact_node_aliases(list(nodes))
         action_name = "删除" if mode == "delete_workers" else "移动" if moving else "复制"
         source_text = self._log_paths(sources)
         target_text = "" if mode == "delete_workers" else f" → {destination}"
@@ -1620,7 +1620,7 @@ class MainWindow(QMainWindow):
         detail = f"{complete}/{len(results)} 个节点成功"
         if failures:
             detail += "；" + "；".join(
-                f"{'、'.join(aliases)}：{error}" for error, aliases in failures.items()
+                f"{compact_node_aliases(aliases)}：{error}" for error, aliases in failures.items()
             )
         return ("成功" if complete == len(results) else "失败" if failures else "部分完成"), detail
 

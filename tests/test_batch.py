@@ -4,12 +4,23 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from nodebridge.batch import BatchResult, run_parallel, source_snapshot
+from nodebridge.batch import BatchResult, compact_node_aliases, run_parallel, source_snapshot
 from nodebridge.transfer import CopyResult
 from test_transfer import DiskBackedSFTP
 
 
 class BatchTests(unittest.TestCase):
+    def test_compact_node_aliases_preserves_gaps_prefixes_and_order(self):
+        self.assertEqual(
+            compact_node_aliases([f"cft{i:02d}" for i in range(2, 51)]),
+            "cft02..50",
+        )
+        self.assertEqual(
+            compact_node_aliases(["cft02", "cft03", "cft05", "ope01", "ope02", "ope03"]),
+            "cft02、cft03、cft05、ope01..03",
+        )
+        self.assertEqual(compact_node_aliases(["cft03", "cft02", "cft02"]), "cft03、cft02、cft02")
+
     def test_nodes_run_concurrently_and_failure_does_not_hide_peer_results(self):
         barrier = threading.Barrier(2, timeout=2)
         updates = []

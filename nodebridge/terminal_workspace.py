@@ -10,7 +10,7 @@ from PySide6.QtCore import QEvent, QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor, QTextDocumentFragment
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QComboBox, QHBoxLayout, QLabel, QLineEdit,
-    QInputDialog, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSplitter, QTabWidget,
+    QInputDialog, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSizePolicy, QSplitter, QTabBar, QTabWidget,
     QToolBar, QToolButton,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
@@ -307,6 +307,9 @@ class TerminalPane(QWidget):
             match = ANSI_ESCAPE.match(data, escape)
             if match is not None:
                 sequence = match.group()
+                if self._pending_cr:
+                    cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock)
+                    self._pending_cr = False
                 if sequence.startswith("\x1b[") and sequence.endswith("m"):
                     self._apply_sgr(sequence[2:-1])
                 elif sequence.startswith("\x1b[") and sequence.endswith("J"):
@@ -335,6 +338,25 @@ class TerminalPane(QWidget):
                         ):
                             break
                         cursor.movePosition(operation)
+                elif sequence.startswith("\x1b[") and sequence[-1] in ("A", "B", "E", "F"):
+                    amount = sequence[2:-1] or "1"
+                    steps = int(amount) if amount.isdecimal() else 1
+                    direction = -1 if sequence[-1] in ("A", "F") else 1
+                    column = cursor.position() - cursor.block().position()
+                    block = cursor.block()
+                    for _ in range(min(steps, 1000)):
+                        next_block = block.previous() if direction < 0 else block.next()
+                        if not next_block.isValid():
+                            break
+                        block = next_block
+                    if sequence[-1] in ("E", "F"):
+                        column = 0
+                    cursor.setPosition(block.position() + min(column, len(block.text())))
+                    first_block = min(first_block, cursor.blockNumber())
+                elif sequence.startswith("\x1b[") and sequence.endswith("G"):
+                    amount = sequence[2:-1] or "1"
+                    column = max(1, int(amount)) - 1 if amount.isdecimal() else 0
+                    cursor.setPosition(cursor.block().position() + min(column, len(cursor.block().text())))
                 offset = match.end()
             elif data[escape:].startswith(("\x1b[", "\x1b]")) or escape == len(data) - 1:
                 self._ansi_pending = data[escape:]
@@ -365,6 +387,14 @@ class TerminalPane(QWidget):
         char_format.setFontUnderline(self._ansi_underline)
         run: list[str] = []
 
+        def line_feed() -> None:
+            if cursor.block().next().isValid():
+                cursor.movePosition(QTextCursor.MoveOperation.NextBlock)
+                cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock)
+            else:
+                cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock)
+                cursor.insertText("\n", char_format)
+
         def flush_run() -> None:
             if not run:
                 return
@@ -386,7 +416,7 @@ class TerminalPane(QWidget):
             if self._pending_cr:
                 self._pending_cr = False
                 if character == "\n":
-                    cursor.insertText("\n", char_format)
+                    line_feed()
                     continue
                 cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock)
             if character == "\b":
@@ -400,7 +430,7 @@ class TerminalPane(QWidget):
                     self.bellRequested.emit()
             elif character == "\n":
                 flush_run()
-                cursor.insertText("\n", char_format)
+                line_feed()
             elif character >= " ":
                 run.append(character)
         flush_run()
@@ -515,6 +545,21 @@ class CombinedTerminalPane(QWidget):
             scrollbar.setValue(min(old_scroll, scrollbar.maximum()))
 
 
+class BoundedTerminalTabBar(QTabBar):
+    """Use the available tab row without letting all tab titles widen the window."""
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        tabs = self.parentWidget()
+        available = tabs.width() if tabs is not None else 0
+        if isinstance(tabs, QTabWidget):
+            menu = tabs.cornerWidget(Qt.Corner.TopRightCorner)
+            if menu is not None:
+                available -= menu.width()
+        hint.setWidth(min(hint.width(), max(640, available)))
+        return hint
+
+
 class BroadcastCommandInput(QLineEdit):
     inputFocused = Signal()
 
@@ -627,8 +672,10 @@ class TerminalWorkspace(QWidget):
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.addWidget(QLabel("终端标签  ·  关闭标签只隐藏视图"))
         self.terminal_tabs = QTabWidget()
+        self.terminal_tabs.setTabBar(BoundedTerminalTabBar(self.terminal_tabs))
         self.terminal_tabs.setObjectName("terminalTabs")
         self.terminal_tabs.setTabsClosable(True)
+        self.terminal_tabs.tabBar().setUsesScrollButtons(True)
         self.terminal_tabs.tabCloseRequested.connect(self._hide_tab)
         self.terminal_tabs.currentChanged.connect(self._tab_changed)
         self.tab_list_menu = QMenu(self.terminal_tabs)
@@ -655,6 +702,7 @@ class TerminalWorkspace(QWidget):
         header = QHBoxLayout()
         header.addWidget(QLabel("广播命令"))
         self.broadcast_summary = QLabel()
+        self.broadcast_summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         header.addWidget(self.broadcast_summary, 1)
         broadcast_layout.addLayout(header)
         command_row = QHBoxLayout()
@@ -1022,7 +1070,10 @@ class TerminalWorkspace(QWidget):
     def _group_changed(self, _index: int) -> None:
         self._clear_broadcast_draft()
         self._rebuild_group_members()
-        if self.active_group_id() is not None:
+        group = self._groups.get(self.active_group_id())
+        if group is not None and len(group.members) == 1:
+            self._show_tab(group.members[0])
+        elif group is not None:
             self._show_combined()
 
     def _rebuild_group_members(self) -> None:
@@ -1329,10 +1380,14 @@ class TerminalWorkspace(QWidget):
         self.send_button.setEnabled(enabled and bool(targets) and bool(self.broadcast_input.text().strip()))
         if self._broadcast_busy:
             self.broadcast_summary.setText(f"{group_name} · 正在检查各终端工作目录…")
+            self.broadcast_summary.setToolTip("")
         elif targets:
-            labels = ", ".join(self._nodes[node_id] for node_id in targets)
+            labels = [self._nodes[node_id] for node_id in targets]
+            preview = ", ".join(labels[:3]) + (" 等" if len(labels) > 3 else "")
             self.broadcast_summary.setText(
-                f"{group_name} · {len(targets)} 个目标：{labels or '无'} · 严格组内广播"
+                f"{group_name} · {len(targets)} 个目标：{preview} · 严格组内广播"
             )
+            self.broadcast_summary.setToolTip("广播目标：" + ", ".join(labels))
         else:
             self.broadcast_summary.setText(f"{group_name} · 在本组成员列表勾选目标")
+            self.broadcast_summary.setToolTip("")
