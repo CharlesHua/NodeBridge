@@ -9,6 +9,9 @@ import posixpath
 import re
 import shlex
 import stat
+import threading
+import time
+from concurrent.futures import CancelledError
 from dataclasses import dataclass
 
 import paramiko
@@ -234,6 +237,14 @@ class RemoteSession:
             channel.close()
             raise
 
+    def authentication_banner(self) -> str:
+        """Return the server's pre-authentication notice, if one was sent."""
+        transport = self._root_client.get_transport() if self._root_client is not None else None
+        if transport is None:
+            return ""
+        banner = transport.get_banner()
+        return banner if isinstance(banner, str) else ""
+
     def list_directory(self, path: str) -> DirectoryListing:
         normalized = self._sftp.normalize(path)
         entries = []
@@ -362,6 +373,147 @@ class RemoteSession:
         aliases = sorted(set(config_aliases).union(numbered), key=str.casefold)
         return NodeDiscovery(tuple(aliases), tuple(config_aliases), tuple(sorted(numbered, key=str.casefold)), short_name)
 
+    def probe_alias(self, alias: str, *, timeout: float = 8.0) -> tuple[str, str]:
+        """Test passwordless SSH from the jump host without trusting new keys."""
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._@-]*", alias):
+            raise ValueError("无效的 SSH 节点别名。")
+        if self._client is None:
+            raise ConnectionError("跳板节点不可用。")
+        command = (
+            "ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes "
+            "-o ConnectTimeout=4 -o ConnectionAttempts=1 "
+            f"{shlex.quote(alias)} true"
+        )
+        _stdin, stdout, _stderr = self._client.exec_command(command, timeout=timeout)
+        channel = stdout.channel
+        deadline = time.monotonic() + timeout
+        error_output = bytearray()
+        try:
+            while not channel.exit_status_ready():
+                if channel.recv_ready():
+                    channel.recv(4096)
+                if channel.recv_stderr_ready() and len(error_output) < 2048:
+                    error_output.extend(channel.recv_stderr(2048 - len(error_output)))
+                if time.monotonic() >= deadline:
+                    return "unreachable", "SSH 探测超时"
+                time.sleep(0.05)
+            while channel.recv_stderr_ready() and len(error_output) < 2048:
+                error_output.extend(channel.recv_stderr(2048 - len(error_output)))
+            code = channel.recv_exit_status()
+            if code == 0:
+                return "reachable", "SSH 免密连接成功"
+            detail = error_output.decode("utf-8", "replace").strip() or f"SSH 返回状态 {code}"
+            lowered = detail.casefold()
+            if "host key verification failed" in lowered or "unknown host key" in lowered:
+                return "untrusted", detail
+            if "permission denied" in lowered:
+                return "auth", detail
+            return "unreachable", detail
+        finally:
+            channel.close()
+
+    def sha256_file(
+        self, path: str, *, timeout: float = 3600.0,
+        command_client: paramiko.SSHClient | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> str:
+        """Calculate a file's SHA-256 on its SSH host; return only the digest."""
+        if not path.startswith("/"):
+            raise ValueError("SHA-256 校验要求绝对路径。")
+        output, errors, code = self._sha256_command_output(
+            f"LC_ALL=C sha256sum -- {shlex.quote(path)}", timeout=timeout,
+            command_client=command_client, cancel_event=cancel_event, max_output=8192,
+        )
+        if code != 0:
+            detail = errors.decode("utf-8", "replace").strip() or f"退出状态 {code}"
+            if "No such file or directory" in detail:
+                raise FileNotFoundError(path)
+            raise OSError(f"远程 sha256sum 失败：{detail}")
+        match = re.search(rb"(?:^|\n)\\?([0-9a-fA-F]{64}) [ *]", output)
+        if match is None:
+            raise OSError("远程 sha256sum 未返回有效的 SHA-256。")
+        return match.group(1).decode("ascii").lower()
+
+    def sha256_files(
+        self, paths: list[str], *, timeout: float = 3600.0,
+        command_client: paramiko.SSHClient | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> dict[str, str]:
+        """Hash a bounded group in one remote command, with NUL-delimited names."""
+        if not paths:
+            return {}
+        if any(not path.startswith("/") for path in paths):
+            raise ValueError("SHA-256 校验要求绝对路径。")
+        command = "LC_ALL=C sha256sum -z -- " + " ".join(shlex.quote(path) for path in paths)
+        max_output = max(8192, sum(len(path.encode("utf-8")) + 68 for path in paths) + 1024)
+        output, errors, code = self._sha256_command_output(
+            command, timeout=timeout, command_client=command_client,
+            cancel_event=cancel_event, max_output=max_output,
+        )
+        if code != 0:
+            detail = errors.decode("utf-8", "replace").strip() or f"退出状态 {code}"
+            raise OSError(f"远程 sha256sum 失败：{detail}")
+        records = output.split(b"\0")
+        if len(records) != len(paths) + 1 or records[-1]:
+            raise OSError("远程 sha256sum 返回的文件数量与请求不符。")
+        result = {}
+        for index, (path, record) in enumerate(zip(paths, records[:-1])):
+            if index == 0:
+                start = re.search(rb"(?:^|\n)(?=[0-9a-fA-F]{64} [ *])", record)
+                if start is not None:
+                    record = record[start.end():]
+            match = re.fullmatch(rb"([0-9a-fA-F]{64}) [ *](.*)", record, re.DOTALL)
+            if match is None or match.group(2) != path.encode("utf-8"):
+                raise OSError("远程 sha256sum 返回了无法对应的文件名或摘要。")
+            result[path] = match.group(1).decode("ascii").lower()
+        return result
+
+    def _sha256_command_output(
+        self, command: str, *, timeout: float,
+        command_client: paramiko.SSHClient | None,
+        cancel_event: threading.Event | None, max_output: int,
+    ) -> tuple[bytes, bytes, int]:
+        client = command_client or self._root_client
+        if cancel_event is not None and cancel_event.is_set():
+            raise CancelledError()
+        transport = client.get_transport() if client is not None else None
+        if transport is None or not transport.is_active():
+            raise ConnectionError("SSH 连接已断开，无法计算远程 SHA-256。")
+        for alias in reversed(self._alias_route):
+            command = (
+                "ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes "
+                f"-o ConnectTimeout=10 {shlex.quote(alias)} {shlex.quote(command)}"
+            )
+        try:
+            channel = transport.open_session(timeout=10)
+        except paramiko.ChannelException as exc:
+            raise OSError(f"跳板 SSH 拒绝打开核对通道，可能达到会话上限：{exc}") from exc
+        output = bytearray()
+        errors = bytearray()
+        deadline = time.monotonic() + timeout
+        try:
+            channel.exec_command(command)
+            while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise CancelledError()
+                if channel.recv_ready():
+                    chunk = channel.recv(4096)
+                    output.extend(chunk)
+                    if len(output) > max_output:
+                        raise OSError("远程 sha256sum 输出超过预期长度。")
+                if channel.recv_stderr_ready():
+                    chunk = channel.recv_stderr(4096)
+                    errors.extend(chunk[:max(0, 8192 - len(errors))])
+                if channel.exit_status_ready() and not channel.recv_ready() and not channel.recv_stderr_ready():
+                    break
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"远程 SHA-256 计算超时：{path}")
+                time.sleep(0.05)
+            code = channel.recv_exit_status()
+            return bytes(output), bytes(errors), code
+        finally:
+            channel.close()
+
     def close(self) -> None:
         try:
             if self._sftp is not None:
@@ -373,3 +525,33 @@ class RemoteSession:
             finally:
                 if self._tunnel is not None:
                     self._tunnel.close()
+
+    def open_sftp_peer(self) -> "RemoteSession":
+        """Open an independently owned SFTP channel for a file transfer."""
+        root = self._root_client
+        transport = root.get_transport() if root is not None else None
+        if transport is None or not transport.is_active():
+            raise ConnectionError("SSH 连接已断开，无法开始文件传输。")
+        if not self._alias_route:
+            sftp = paramiko.SFTPClient.from_transport(transport)
+            if sftp is None:
+                raise ConnectionError("无法打开独立的 SFTP 传输通道。")
+            return RemoteSession(self.config, None, sftp)
+        command = (
+            "ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes "
+            f"-o ConnectTimeout=10 -s {shlex.quote(self._alias_route[-1])} sftp"
+        )
+        for hop in reversed(self._alias_route[:-1]):
+            command = (
+                "ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes "
+                f"-o ConnectTimeout=10 {shlex.quote(hop)} {shlex.quote(command)}"
+            )
+        channel = transport.open_session(timeout=10)
+        try:
+            channel.settimeout(30)
+            channel.exec_command(command)
+            sftp = paramiko.SFTPClient(channel)
+            return RemoteSession(self.config, None, sftp, channel)
+        except Exception:
+            channel.close()
+            raise

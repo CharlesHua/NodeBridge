@@ -6,9 +6,9 @@ This file records decisions that affect future work. It does not turn planned fe
 
 ## License / 许可证
 
-The owner chose GNU GPL version 3 only (`GPL-3.0-only`) for NodeBridge, with Copyright (C) 2026 Charles Hua. The project is public according to the owner. The full license text is in [LICENSE](LICENSE); third-party dependencies keep their own licenses.
+The owner chose GNU GPL version 3 only (`GPL-3.0-only`) for NodeBridge, with Copyright (C) 2026 Charles Hua. The project is public according to the owner. The full license text is in [LICENSE](../LICENSE); third-party dependencies keep their own licenses.
 
-项目所有者为 NodeBridge 选择 GNU GPL 第 3 版且仅限该版本（`GPL-3.0-only`），版权行为 Copyright (C) 2026 Charles Hua。据项目所有者说明，仓库已公开。完整许可证见 [LICENSE](LICENSE)；第三方依赖保留各自的许可证。
+项目所有者为 NodeBridge 选择 GNU GPL 第 3 版且仅限该版本（`GPL-3.0-only`），版权行为 Copyright (C) 2026 Charles Hua。据项目所有者说明，仓库已公开。完整许可证见 [LICENSE](../LICENSE)；第三方依赖保留各自的许可证。
 
 ## Platform and stack / 平台与技术栈
 
@@ -16,9 +16,9 @@ Use Python 3.12 from `environment.yml`, PySide6 for the desktop UI, and Paramiko
 
 使用 `environment.yml` 中的 Python 3.12、PySide6 桌面界面和 Paramiko SSH/SFTP。首先验证 Windows，适用时让平台相关代码可替换。阻塞式网络操作放在界面线程之外。
 
-The Windows release must be self-contained and run without Python preinstalled on the target machine. The packaging method is still to be chosen and verified; see [TODO.md](TODO.md).
+The Windows release must be self-contained and run without Python preinstalled on the target machine. An experimental PyInstaller one-folder build is available; clean-machine and cluster verification remain before release. See [PORTABLE.md](PORTABLE.md) and [TODO.md](TODO.md).
 
-Windows 发行包必须自包含，在目标机器未预装 Python 时也能运行。具体打包方式仍需选择和验证；见 [TODO.md](TODO.md)。
+Windows 发行包必须自包含，在目标机器未预装 Python 时也能运行。现已有试验性的 PyInstaller 单目录构建；正式发行前仍需在干净机器和集群上验证。见 [PORTABLE.md](PORTABLE.md) 和 [TODO.md](TODO.md)。
 
 ## SSH identity / SSH 身份校验
 

@@ -2,9 +2,25 @@
 
 ## TODO / 待办
 
-As the final release stage, provide a self-contained **portable Windows edition first**: extract and run it without an installer or Python preinstalled on the target machine. Test it on a clean Windows machine or equivalent environment and document extraction, startup, and updates. An installer is optional and comes only after the portable edition.
+Design a persistent Task Workspace before implementing it. The proposed UI is a third tab beside Files and Terminal, plus a current-task selector shared across views; this layout is not yet confirmed. A named task should remember a direct site, selected indirect nodes, one common absolute working path with optional per-node overrides, local inputs, and task-first result destinations. Loading a task would fill the current Files view; connections and file operations would still require explicit user action. Settle how task snapshots and result manifests relate to later distribution, collection, verification, and cleanup before adding one-click orchestration. The owner deferred deciding whether task membership changes the default scope of batch file actions until Task Workspace implementation.
 
-在最后的发行阶段，**优先提供免安装绿色 Windows 版**：解压即可运行，目标机器无需安装器或预装 Python。在干净的 Windows 机器或等效环境中验证，并说明解压、启动与更新方法。安装版可选，且排在绿色版之后。
+先设计可保存的“任务工作区”，再实施。建议界面与“文件”“终端”并列为第三个标签页，并在各视图共用当前任务选择器；此布局尚未最终确认。按任务名称记录直连站点、间接节点、共同绝对工作路径及可选的逐节点覆盖、本地输入和以任务为先的结果位置。加载任务时填充现有文件界面；连接和文件操作仍由用户明确触发。实施一键流程前，先确定任务快照与结果清单如何关联后续的分发、汇集、核对及清理。任务成员是否改变批量文件操作的默认范围，项目所有者决定留待实现任务工作区时再讨论。
+
+Automatic background SHA-256 checking now starts after merged-directory refresh and uses separate connections from file operations. Batched commands reduce SSH process starts, but validate runtime and server load on the owner's cluster, especially for many large files; agree on a large-file policy and consider an explicit pause control or a safe unchanged-file cache. Verify `sha256sum -z` availability, unusual filenames, per-node errors, and two-command jump-channel capacity live. Decide whether a fallback is needed on hosts without that command.
+
+合并目录刷新后现会通过独立连接在后台自动进行 SHA-256 核对。批量命令减少了 SSH 进程启动次数，但仍须在项目所有者的集群验证耗时和服务器负载，特别是大量大文件的场景；与所有者确定大文件策略，并考虑显式暂停及只在输入可证明未变化时复用结果。实测 `sha256sum -z` 是否可用、特殊文件名、逐节点错误及跳板同时运行两个命令的容量；再决定缺少该命令的节点是否需要后备方案。
+
+Extend the automatic same-path SHA-256 comparison only after live testing: support recursive directory inventories, explicit handling of symlinks and changing files, and optional verification of bytes after collection or distribution. The current difference labels are a node-to-node snapshot, not a transfer receipt.
+
+现有同路径自动 SHA-256 比较经实测后再扩展：支持递归目录清单、明确处理符号链接与核对期间变化的文件，并可选在汇集或分发后校验目标字节。当前差异栏结论只是节点间快照，不是传输验收凭据。
+
+The experimental self-contained **portable Windows edition** now builds as a one-folder archive. Before release, test extraction and startup on a clean Windows machine without Python, exercise file transfer and WebEngine terminals against the owner's cluster, verify writable `data` behavior and migration from source-run profiles, and document updates. An installer is optional and comes only after the portable edition.
+
+现已能生成试验性的自包含 **Windows 绿色版**单目录压缩包。正式发行前，需要在未安装 Python 的干净 Windows 机器上验证解压与启动，在项目所有者的集群上验证文件传输和 WebEngine 终端，检查可写 `data` 目录及源码版资料迁移，并写明更新方法。安装版可选，且排在绿色版之后。
+
+Embed `nodebridge/assets/nodebridge.ico` as the Windows executable icon and bundle the local icon assets when building that edition; verify the icon in Explorer, the title bar, and the taskbar.
+
+打包绿色版时，将 `nodebridge/assets/nodebridge.ico` 嵌入 Windows 可执行文件并包含本地图标资源；验证资源管理器、标题栏及任务栏中的图标。
 
 Drag-copy collection from connected work nodes to the jump or local pane now uses a node-name suffix on each selected top-level item. Multi-source move and safe source deletion remain planned; do not delete any source after collection until that behavior is explicitly designed and confirmed.
 
@@ -66,7 +82,7 @@ After the core group workflow is stable, consider showing effectively identical 
 6. Phase 5: multiple configured nodes and switching — site profiles, sequential SSH jumps, and focused or merged work-node browsing implemented.
 7. Phase 6: concurrent multi-node copy distribution, suffix-based drag collection, and confirmed delete — implemented with up to four node tasks at once, without a four-node total limit; a transfer queue, transfer-task retry, and multi-source move remain planned.
 8. Phase 7: robustness and UX refinement — ongoing.
-9. Phase 8: interactive remote SSH terminal with PTY — implemented for ordinary Shell interaction; full-screen terminal emulation remains planned.
+9. Phase 8: interactive remote SSH terminal with PTY and local xterm.js full-screen emulation — implemented; live cluster validation remains.
 10. Phase 9: simultaneous node terminals — implemented; detached and persistent remote sessions remain planned.
 11. Phase 10: basic explicit multi-node command broadcast implemented; per-command exit status and further orchestration remain planned.
 12. Phase 11: Terminal Groups and strictly group-scoped broadcast implemented; optional identical-result grouping (Priority B) remains planned.
@@ -80,7 +96,7 @@ After the core group workflow is stable, consider showing effectively identical 
 6. 阶段 5：多个节点的配置与切换——已支持站点资料、逐级 SSH 中转及单节点聚焦或合并浏览。
 7. 阶段 6：多节点并行复制分发、按后缀拖动汇集及经确认的删除——一次最多并行处理四个节点任务，节点总数不限制为四个；传输队列、任务重试和多来源移动仍待实现。
 8. 阶段 7：健壮性与交互完善——进行中。
-9. 阶段 8：带 PTY 的交互式 SSH 远程终端——普通 Shell 交互已实现；全屏终端仿真仍待实现。
+9. 阶段 8：带 PTY 的交互式 SSH 远程终端及本地 xterm.js 全屏仿真——已实现；仍需集群实测。
 10. 阶段 9：多个节点的终端同时运行——已实现；可分离且持久的远程会话仍待实现。
 11. 阶段 10：明确标示的多节点命令广播基本功能已实现；逐命令退出状态及更多节点协同功能仍待实现。
 12. 阶段 11：Terminal Group 与严格组内广播已实现；相同结果合并显示（优先级 B）仍待实现。

@@ -26,6 +26,10 @@ def _name(name: str, *, local: bool) -> str:
     return name
 
 
+def validate_remote_name(name: str) -> str:
+    return _name(name, local=False)
+
+
 def _remote_lstat(sftp, path: str):
     try:
         return sftp.lstat(path)
@@ -36,9 +40,47 @@ def _remote_lstat(sftp, path: str):
 
 
 def create_remote_directory(session: RemoteSession, parent: str, name: str) -> str:
-    target = posixpath.join(parent, _name(name, local=False))
+    target = posixpath.join(parent, validate_remote_name(name))
     session.sftp.mkdir(target)
     return target
+
+
+def remote_directory_conflict(session: RemoteSession, parent: str, name: str) -> bool:
+    target = posixpath.join(parent, validate_remote_name(name))
+    return _remote_lstat(session.sftp, target) is not None
+
+
+def create_remote_directory_with_policy(
+    session: RemoteSession, parent: str, name: str, policy: str,
+) -> tuple[str, bool]:
+    """Return (actual path, created); never replace an existing remote item."""
+    name = validate_remote_name(name)
+    if policy not in {"error", "skip", "number"}:
+        raise ValueError("未知的新建目录同名处理方式。")
+    target = posixpath.join(parent, name)
+    if policy == "error":
+        session.sftp.mkdir(target)
+        return target, True
+    if _remote_lstat(session.sftp, target) is None:
+        try:
+            session.sftp.mkdir(target)
+            return target, True
+        except OSError:
+            if _remote_lstat(session.sftp, target) is None:
+                raise
+    if policy == "skip":
+        return target, False
+    for number in range(2, 10002):
+        candidate = posixpath.join(parent, f"{name} ({number})")
+        if _remote_lstat(session.sftp, candidate) is not None:
+            continue
+        try:
+            session.sftp.mkdir(candidate)
+            return candidate, True
+        except OSError:
+            if _remote_lstat(session.sftp, candidate) is None:
+                raise
+    raise FileExistsError(f"无法为 {target} 找到可用的序号目录名。")
 
 
 def create_local_directory(parent: str, name: str) -> Path:
@@ -94,6 +136,6 @@ def delete_remote(session: RemoteSession, paths: list[str]) -> int:
 
 def trash_local(paths: list[str]) -> int:
     for path in paths:
-        if not QFile.moveToTrash(path)[0]:
+        if not QFile.moveToTrash(path):
             raise OSError(f"无法移入回收站：{path}")
     return len(paths)

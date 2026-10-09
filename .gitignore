@@ -3,6 +3,7 @@
 .conda-pkgs/
 .conda-envs/
 .conda-env/
+.conda-env-*/
 __pycache__/
 *.py[cod]
 *.egg-info/

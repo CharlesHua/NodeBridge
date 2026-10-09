@@ -1,7 +1,10 @@
 """Broadcast delivery and per-terminal working-directory checks."""
 
 import os
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -18,9 +21,12 @@ class TerminalBroadcastTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self):
+        self.log_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.log_dir.cleanup)
         self.window = MainWindow(QSettings(QSettings.Format.IniFormat,
                                            QSettings.Scope.UserScope,
-                                           "NodeBridgeBroadcastTest", "temporary"))
+                                           "NodeBridgeBroadcastTest", "temporary"),
+                                 log_path=Path(self.log_dir.name) / "nodebridge.log")
         workspace = self.window.terminal_workspace
         workspace.set_nodes([("worker:cft02", "cft02"), ("worker:cft03", "cft03")])
         self.group_id = workspace.create_group(["worker:cft02", "worker:cft03"])
@@ -43,9 +49,10 @@ class TerminalBroadcastTests(unittest.TestCase):
         self.window.close()
 
     def _begin(self):
+        previous = len(self.sent)
         self.window.terminal_workspace.send_button.click()
-        self.assertEqual(len(self.sent), 2)
-        self.assertTrue(all(b"NodeBridgePwd:" in data for _, data in self.sent))
+        self.assertEqual(len(self.sent), previous + 2)
+        self.assertTrue(all(b"NodeBridgePwd:" in data for _, data in self.sent[previous:]))
         self.assertFalse(self.window.terminal_workspace.send_button.isEnabled())
         return dict(self.window._broadcast_check.pending)
 
@@ -65,6 +72,88 @@ class TerminalBroadcastTests(unittest.TestCase):
                                          (self.second, b"echo hello\r")])
         self.assertEqual(self.window.terminal_workspace.broadcast_input.text(), "")
         self.assertIs(self.app.focusWidget(), self.window.terminal_workspace.broadcast_input)
+        records = [json.loads(line) for line in self.window._activity_log.path.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(records[-1]["category"], "broadcast")
+        self.assertEqual(records[-1]["state"], "已提交发送")
+        self.assertEqual(records[-1]["context"]["sent_nodes"], ["cft02", "cft03"])
+        self.assertNotIn("echo hello", self.window._activity_log.path.read_text(encoding="utf-8"))
+
+    def test_conda_prefixed_prompts_still_allow_matching_directory_probe(self):
+        workspace = self.window.terminal_workspace
+        workspace.append_output(self.first, "\r\n(base) (condmat) user@cft02:/work$ ")
+        workspace.append_output(self.second, "\r\n(base) (condmat) user@cft03:/work$ ")
+        self.assertTrue(workspace.shell_ready(self.first))
+        self.assertTrue(workspace.shell_ready(self.second))
+
+        tokens = self._begin()
+        with patch.object(QMessageBox, "exec", side_effect=AssertionError("same directory should not warn")):
+            self._answer(tokens, {self.first: "/work", self.second: "/work"})
+        self.assertEqual(self.sent[2:], [(self.first, b"echo hello\r"),
+                                         (self.second, b"echo hello\r")])
+
+    def test_different_conda_prefixes_default_to_not_sending(self):
+        workspace = self.window.terminal_workspace
+        workspace.append_output(self.first, "\r\n(condmat) user@cft02:/work$ ")
+        workspace.append_output(self.second, "\r\n(base) user@cft03:/work$ ")
+        tokens = self._begin()
+
+        def cancel(dialog):
+            self.assertIn("cft02：(condmat)", dialog.informativeText())
+            self.assertIn("cft03：(base)", dialog.informativeText())
+            next(button for button in dialog.buttons() if button.text() == "不发送").click()
+            return 0
+
+        with patch.object(QMessageBox, "exec", cancel):
+            self._answer(tokens, {self.first: "/work", self.second: "/work"})
+        self.assertEqual(len(self.sent), 2)
+        self.assertEqual(workspace.broadcast_input.text(), "echo hello")
+        self.assertFalse(workspace.ignores_conda_mismatch(self.group_id))
+
+    def test_different_conda_prefixes_can_send_once_or_ignore_for_group(self):
+        workspace = self.window.terminal_workspace
+        workspace.append_output(self.first, "\r\n(condmat) user@cft02:/work$ ")
+        workspace.append_output(self.second, "\r\nuser@cft03:/work$ ")
+
+        def choose(label):
+            def click(dialog):
+                next(button for button in dialog.buttons() if button.text() == label).click()
+                return 0
+            return click
+
+        tokens = self._begin()
+        with patch.object(QMessageBox, "exec", choose("此次仍要发送")):
+            self._answer(tokens, {self.first: "/work", self.second: "/work"})
+        self.assertEqual(len(self.sent), 4)
+        self.assertFalse(workspace.ignores_conda_mismatch(self.group_id))
+
+        for sid, prompt in ((self.first, "(condmat) user@cft02:/work$ "),
+                            (self.second, "user@cft03:/work$ ")):
+            self.window._terminal_output(sid, f"echo hello\r\nok\r\n{prompt}")
+        workspace.broadcast_input.setText("echo hello")
+        tokens = self._begin()
+        with patch.object(QMessageBox, "exec", choose("该终端组不再提示")):
+            self._answer(tokens, {self.first: "/work", self.second: "/work"})
+        self.assertEqual(len(self.sent), 8)
+        self.assertTrue(workspace.ignores_conda_mismatch(self.group_id))
+
+        other_group = workspace.create_group(["worker:cft02"])
+        self.assertFalse(workspace.ignores_conda_mismatch(other_group))
+
+    def test_ignoring_conda_difference_does_not_skip_directory_warning(self):
+        workspace = self.window.terminal_workspace
+        workspace.ignore_conda_mismatch(self.group_id)
+        workspace.append_output(self.first, "\r\n(condmat) user@cft02:/work$ ")
+        workspace.append_output(self.second, "\r\n(base) user@cft03:/work$ ")
+        tokens = self._begin()
+
+        def cancel_directory_warning(dialog):
+            self.assertIn("工作目录不同", dialog.text())
+            next(button for button in dialog.buttons() if button.text() == "取消").click()
+            return 0
+
+        with patch.object(QMessageBox, "exec", cancel_directory_warning):
+            self._answer(tokens, {self.first: "/work", self.second: "/other"})
+        self.assertEqual(len(self.sent), 2)
 
     def test_probe_echo_is_hidden_and_command_output_reaches_combined_view(self):
         tokens = self._begin()
@@ -82,12 +171,12 @@ class TerminalBroadcastTests(unittest.TestCase):
         for sid, result in ((self.first, "a.py"), (self.second, "b.py")):
             self.window._terminal_output(sid, f"echo hello\r\n{result}\r\n")
             pane = workspace._views[sid]
-            visible = pane.output.toPlainText()
+            visible = pane._recent_output
             self.assertNotIn("printf", visible)
             self.assertNotIn("NodeBridgePwd", visible)
             self.assertIn(result, visible)
         workspace.show_group_combined(self.group_id)
-        joint = workspace.terminal_tabs.currentWidget().output.toPlainText()
+        joint = workspace.terminal_tabs.currentWidget()._rendered
         self.assertLess(joint.index("user@cft02:/work$ echo hello"),
                         joint.index("user@cft03:/work$ echo hello"))
         self.assertNotIn("[cft", joint)

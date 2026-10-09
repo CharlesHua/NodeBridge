@@ -1,4 +1,5 @@
 import io
+import shlex
 import stat
 import unittest
 from types import SimpleNamespace
@@ -8,6 +9,155 @@ from nodebridge.remote import NodeConfig, RemoteSession, UnknownHostKeyError, Ve
 
 
 class RemoteSessionTests(unittest.TestCase):
+    def test_sftp_peer_uses_separate_channel_without_closing_browse_session(self):
+        client = Mock()
+        browse_sftp = Mock()
+        peer_sftp = Mock()
+        session = RemoteSession(NodeConfig("jump.example", 22, "alice"), client, browse_sftp)
+        with patch("nodebridge.remote.paramiko.SFTPClient.from_transport", return_value=peer_sftp) as open_sftp:
+            peer = session.open_sftp_peer()
+        open_sftp.assert_called_once_with(client.get_transport.return_value)
+        self.assertIs(peer.sftp, peer_sftp)
+        self.assertIsNot(peer.sftp, browse_sftp)
+        peer.close()
+        peer_sftp.close.assert_called_once()
+        browse_sftp.close.assert_not_called()
+        client.close.assert_not_called()
+
+    def test_alias_sftp_peer_keeps_strict_host_key_checking(self):
+        root = Mock()
+        channel = root.get_transport.return_value.open_session.return_value
+        session = RemoteSession(NodeConfig("cft03", 22, ""), None, Mock(),
+                                alias_route=("cft02", "cft03"), root_client=root)
+        with patch("nodebridge.remote.paramiko.SFTPClient", return_value=Mock()):
+            peer = session.open_sftp_peer()
+        command = channel.exec_command.call_args.args[0]
+        self.assertIn("StrictHostKeyChecking=yes", command)
+        self.assertIn("cft02", command)
+        self.assertIn("cft03", command)
+        peer.close()
+        channel.close.assert_called()
+        root.close.assert_not_called()
+
+    def test_sha256_runs_on_alias_node_and_returns_only_digest(self):
+        root = Mock()
+        transport = root.get_transport.return_value
+        transport.is_active.return_value = True
+        channel = transport.open_session.return_value
+        channel.recv_ready.side_effect = [True, False]
+        channel.recv_stderr_ready.return_value = False
+        channel.exit_status_ready.return_value = True
+        channel.recv_exit_status.return_value = 0
+        digest = "a" * 64
+        channel.recv.return_value = (digest + "  /work/a b.txt\n").encode()
+        session = RemoteSession(NodeConfig("cft02", 22, ""), None, Mock(),
+                                alias_route=("cft02",), root_client=root)
+
+        path = "/work/a b'; touch /tmp/should-not-run; #.txt"
+        self.assertEqual(session.sha256_file(path), digest)
+        command = channel.exec_command.call_args.args[0]
+        self.assertIn("ssh -T", command)
+        self.assertIn("StrictHostKeyChecking=yes", command)
+        self.assertIn("sha256sum --", command)
+        remote_command = shlex.split(command)[-1]
+        self.assertEqual(shlex.split(remote_command)[-1], path)
+        channel.close.assert_called_once()
+
+    def test_sha256_rejects_missing_or_invalid_output(self):
+        root = Mock()
+        transport = root.get_transport.return_value
+        transport.is_active.return_value = True
+        channel = transport.open_session.return_value
+        channel.recv_ready.return_value = False
+        channel.recv_stderr_ready.return_value = False
+        channel.exit_status_ready.return_value = True
+        channel.recv_exit_status.return_value = 0
+        session = RemoteSession(NodeConfig("cft02", 22, ""), None, Mock(),
+                                alias_route=("cft02",), root_client=root)
+        with self.assertRaisesRegex(OSError, "未返回有效"):
+            session.sha256_file("/work/a.txt")
+        with self.assertRaises(ValueError):
+            session.sha256_file("relative.txt")
+
+    def test_sha256_can_use_dedicated_jump_transport(self):
+        original = Mock()
+        dedicated = Mock()
+        channel = dedicated.get_transport.return_value.open_session.return_value
+        channel.recv_ready.side_effect = [True, False]
+        channel.recv_stderr_ready.return_value = False
+        channel.exit_status_ready.return_value = True
+        channel.recv_exit_status.return_value = 0
+        channel.recv.return_value = ("b" * 64 + "  /work/a.txt\n").encode()
+        session = RemoteSession(NodeConfig("cft02", 22, ""), None, Mock(),
+                                alias_route=("cft02",), root_client=original)
+        self.assertEqual(session.sha256_file("/work/a.txt", command_client=dedicated), "b" * 64)
+        original.get_transport.assert_not_called()
+        dedicated.get_transport.return_value.open_session.assert_called_once()
+
+    def test_sha256_files_bundles_names_safely_in_one_command(self):
+        root = Mock()
+        channel = root.get_transport.return_value.open_session.return_value
+        channel.recv_ready.side_effect = [True, False]
+        channel.recv_stderr_ready.return_value = False
+        channel.exit_status_ready.return_value = True
+        channel.recv_exit_status.return_value = 0
+        paths = ["/work/a b.txt", "/work/line\nbreak.py"]
+        channel.recv.return_value = b"Cluster notice\n" + b"".join(
+            digest.encode() + b"  " + path.encode() + b"\0"
+            for digest, path in zip(("a" * 64, "b" * 64), paths)
+        )
+        session = RemoteSession(NodeConfig("cft02", 22, ""), None, Mock(),
+                                alias_route=("cft02",), root_client=root)
+
+        self.assertEqual(session.sha256_files(paths),
+                         {paths[0]: "a" * 64, paths[1]: "b" * 64})
+        command = channel.exec_command.call_args.args[0]
+        self.assertEqual(shlex.split(shlex.split(command)[-1])[-2:], paths)
+        self.assertIn("sha256sum -z --", command)
+        root.get_transport.return_value.open_session.assert_called_once()
+
+    def test_sha256_files_rejects_truncated_output(self):
+        root = Mock()
+        channel = root.get_transport.return_value.open_session.return_value
+        channel.recv_ready.side_effect = [True, False]
+        channel.recv_stderr_ready.return_value = False
+        channel.exit_status_ready.return_value = True
+        channel.recv_exit_status.return_value = 0
+        channel.recv.return_value = ("a" * 64 + "  /work/a.txt\0").encode()
+        session = RemoteSession(NodeConfig("cft02", 22, ""), None, Mock(),
+                                alias_route=("cft02",), root_client=root)
+        with self.assertRaisesRegex(OSError, "数量"):
+            session.sha256_files(["/work/a.txt", "/work/b.txt"])
+
+    def test_probe_alias_checks_ssh_without_accepting_unknown_keys(self):
+        client = Mock()
+        channel = Mock()
+        channel.exit_status_ready.return_value = True
+        channel.recv_stderr_ready.return_value = False
+        channel.recv_exit_status.return_value = 0
+        client.exec_command.return_value = (Mock(), SimpleNamespace(channel=channel), Mock())
+        session = RemoteSession(NodeConfig("jump", 22, "alice"), client, Mock())
+
+        self.assertEqual(session.probe_alias("cft02"), ("reachable", "SSH 免密连接成功"))
+        command = client.exec_command.call_args.args[0]
+        self.assertIn("BatchMode=yes", command)
+        self.assertIn("StrictHostKeyChecking=yes", command)
+        self.assertIn("cft02 true", command)
+        channel.close.assert_called_once()
+
+    def test_probe_alias_reports_untrusted_host_key(self):
+        client = Mock()
+        channel = Mock()
+        channel.exit_status_ready.return_value = True
+        channel.recv_stderr_ready.side_effect = [True, False]
+        channel.recv_stderr.return_value = b"Host key verification failed."
+        channel.recv_exit_status.return_value = 255
+        client.exec_command.return_value = (Mock(), SimpleNamespace(channel=channel), Mock())
+        session = RemoteSession(NodeConfig("jump", 22, "alice"), client, Mock())
+        state, detail = session.probe_alias("cft02")
+        self.assertEqual(state, "untrusted")
+        self.assertIn("Host key verification failed", detail)
+
     def test_discovers_all_numbered_nodes_from_hosts_including_other_prefixes(self):
         sftp = Mock()
         sftp.normalize.return_value = "/home/alice"
@@ -103,6 +253,12 @@ class RemoteSessionTests(unittest.TestCase):
             _ = host.sftp
         host.close()
         client.close.assert_called_once_with()
+
+    def test_authentication_banner_reads_server_notice(self):
+        client = Mock()
+        client.get_transport().get_banner.return_value = "Welcome before authentication\n"
+        session = RemoteSession(NodeConfig("server", 22, "alice"), client, None)
+        self.assertEqual(session.authentication_banner(), "Welcome before authentication\n")
 
     def test_unknown_host_key_requires_out_of_band_verification(self):
         key = Mock()

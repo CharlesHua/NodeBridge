@@ -75,12 +75,57 @@ class TerminalWorkspaceTests(unittest.TestCase):
         workspace.add_terminal("worker:cft04", group_id=group_id)
         self.assertEqual(workspace.group_name(group_id), "终端组1(cft02..04)")
         self.assertEqual(workspace.group_selector.currentText(), "终端组1(cft02..04)")
-        self.assertEqual(workspace.terminal_tabs.tabText(0), "终端组1 · cft02 · 终端1")
+        self.assertEqual(workspace.terminal_tabs.tabText(0), "终端组1 · cft02")
         with patch("nodebridge.terminal_workspace.QInputDialog.getText",
                    return_value=("实验组", True)):
             workspace.rename_group_button.click()
         self.assertEqual(workspace.group_name(group_id), "实验组(cft02..04)")
-        self.assertEqual(workspace.terminal_tabs.tabText(0), "实验组 · cft02 · 终端1")
+        self.assertEqual(workspace.terminal_tabs.tabText(0), "实验组 · cft02")
+
+    def test_node_tab_titles_show_terminal_number_only_for_multiple_sessions(self):
+        workspace = self.workspace
+        workspace.set_nodes([("worker:cft20", "cft20")])
+        first = workspace.add_terminal("worker:cft20")
+        first_view = workspace._views[first]
+        self.assertEqual(workspace.terminal_tabs.tabText(0), "终端组1 · cft20")
+
+        second = workspace.add_terminal("worker:cft20")
+        second_view = workspace._views[second]
+        self.assertEqual(workspace.terminal_tabs.tabText(
+            workspace.terminal_tabs.indexOf(first_view)), "终端组1 · cft20 （终端1）")
+        self.assertEqual(workspace.terminal_tabs.tabText(
+            workspace.terminal_tabs.indexOf(second_view)), "终端组2 · cft20 （终端2）")
+
+        workspace._hide_tab(workspace.terminal_tabs.indexOf(first_view))
+        workspace._show_tab(first)
+        self.assertEqual(workspace.terminal_tabs.tabText(
+            workspace.terminal_tabs.indexOf(first_view)), "终端组1 · cft20 （终端1）")
+
+        workspace.remove_terminal(second)
+        self.assertEqual(workspace.terminal_tabs.tabText(
+            workspace.terminal_tabs.indexOf(first_view)), "终端组1 · cft20")
+
+    def test_batch_tabs_load_webengine_only_when_selected(self):
+        workspace = self.workspace
+        workspace.set_nodes([("worker:cft02", "cft02"), ("worker:cft03", "cft03")])
+        group_id = workspace.create_group(["worker:cft02", "worker:cft03"])
+        workspace.show_group_combined(group_id)
+        first = workspace.add_terminal("worker:cft02", group_id=group_id, activate=False)
+        second = workspace.add_terminal("worker:cft03", group_id=group_id, activate=False)
+        workspace.append_output(first, "first output\r\n")
+        workspace.show()
+        self.app.processEvents()
+
+        self.assertEqual(workspace.terminal_tabs.count(), 3)
+        self.assertIs(workspace.terminal_tabs.currentWidget(), workspace._combined_views[group_id])
+        self.assertFalse(workspace._views[first].output._load_started)
+        self.assertFalse(workspace._views[second].output._load_started)
+        self.assertEqual(workspace._views[first].output._pending_output, ["first output\r\n"])
+
+        workspace.terminal_tabs.setCurrentWidget(workspace._views[first])
+        self.app.processEvents()
+        self.assertTrue(workspace._views[first].output._load_started)
+        self.assertFalse(workspace._views[second].output._load_started)
 
     def test_fifty_terminal_tabs_and_broadcast_stay_bounded(self):
         workspace = self.workspace
@@ -165,30 +210,26 @@ class TerminalWorkspaceTests(unittest.TestCase):
         workspace.append_output(earlier, "ls\r\nearlier-node-file.py\r\nuser@cft02:/work$ ")
         workspace.show_group_combined(group_id)
         combined = workspace.terminal_tabs.currentWidget()
-        output = combined.output.toPlainText()
-        self.assertTrue(output.startswith(
-            "user@cft02:/work$ ls\nearlier-node-file.py\n"
-            "user@cft10:/work$ ls\nlater-node-file.py\n"
-        ), repr(output))
+        output = combined._rendered.replace("\r\n", "\n")
+        self.assertTrue(output.startswith("user@cft02:/work$ ls\nearlier-node-file.py\n"), repr(output))
         self.assertLess(output.index("user@cft02:/work$ ls"),
                         output.index("user@cft10:/work$ ls"))
         self.assertNotIn("[cft", output)
         self.assertNotIn("第 1 次", output)
         self.assertIn("earlier-node-file.py", output)
         self.assertIn("later-node-file.py", output)
-        self.assertTrue(combined.output.isReadOnly())
-        color = combined.output.document().find("later-node-file.py").charFormat().foreground().color().name()
-        self.assertEqual(color, "#247bff")
+        self.assertTrue(combined.output._read_only)
+        self.assertIn("\x1b[01;34mlater-node-file.py\x1b[0m", combined._rendered)
         workspace.begin_broadcast_round(group_id, "pwd", {
             "worker:cft10": later, "worker:cft02": earlier,
         })
         workspace.append_output(later, "pwd\r\nnew-result.txt\r\nuser@cft10:/work$ ")
         workspace.append_output(earlier, "pwd\r\n/work\r\nuser@cft02:/work$ ")
         workspace._refresh_combined_views()
-        output = combined.output.toPlainText()
+        output = combined._rendered.replace("\r\n", "\n")
         self.assertLess(output.index("user@cft10:/work$ ls"),
                         output.index("user@cft02:/work$ pwd"))
-        self.assertIn("later-node-file.py\n\nuser@cft02:/work$ pwd", output)
+        self.assertIn("user@cft02:/work$ pwd", output)
         self.assertLess(output.index("earlier-node-file.py"), output.index("later-node-file.py"))
         self.assertLess(output.index("/work"), output.index("new-result.txt"))
         self.assertEqual(output.count("later-node-file.py"), 1)
@@ -198,10 +239,10 @@ class TerminalWorkspaceTests(unittest.TestCase):
         workspace.begin_broadcast_round(other_group, "ls", {"worker:cft02": other})
         workspace.append_output(other, "ls\r\nother-group-only.txt\r\nuser@cft02:/work$ ")
         workspace._refresh_combined_views()
-        self.assertNotIn("other-group-only.txt", combined.output.toPlainText())
+        self.assertNotIn("other-group-only.txt", combined._rendered)
         workspace.show_group_combined(other_group)
         self.assertIn("other-group-only.txt",
-                      workspace.terminal_tabs.currentWidget().output.toPlainText())
+                      workspace.terminal_tabs.currentWidget()._rendered)
 
     def test_broadcast_panel_aligns_with_terminal_area(self):
         workspace = self.workspace
@@ -227,7 +268,7 @@ class TerminalWorkspaceTests(unittest.TestCase):
         workspace.append_output(session_id, "ls\r\nresult.txt\r\nuser@cft02:/work$ ")
         workspace.append_output(session_id, "later unrelated output\r\n")
         workspace.show_group_combined(group_id)
-        combined = workspace.terminal_tabs.currentWidget().output.toPlainText()
+        combined = workspace.terminal_tabs.currentWidget()._rendered
         self.assertIn("result.txt", combined)
         self.assertNotIn("later unrelated output", combined)
         self.assertIn("user@cft02:/work$ ls", combined)
@@ -286,78 +327,9 @@ class TerminalWorkspaceTests(unittest.TestCase):
         workspace.mark_terminal_closed(session_id)
         self.assertEqual(workspace.node_tree.topLevelItem(0).child(0).text(1), "已断开")
         pane = workspace.terminal_tabs.widget(0)
-        self.assertIn("permission denied", pane.output.toPlainText())
+        self.assertIn("permission denied", pane._recent_output)
         self.assertFalse(pane.output._input_enabled)
         self.assertEqual(workspace.broadcast_targets(), {})
-
-    def test_shell_ansi_colors_survive_split_reads_and_reset(self):
-        workspace = self.workspace
-        workspace.set_nodes([("primary", "cft01")])
-        session_id = workspace.add_terminal("primary")
-        pane = workspace.terminal_tabs.widget(0)
-        workspace.append_output(session_id, "\x1b[01;34mblue\x1b[0m \x1b[38;2;0;255")
-        workspace.append_output(session_id, ";0mgreen\x1b[0m plain\x1b[30;43mhighlight\x1b[0m")
-        self.assertIn("blue green plainhighlight", pane.output.toPlainText())
-        self.assertNotIn("\x1b", pane.output.toPlainText())
-
-        document = pane.output.document()
-        def colors(word):
-            selection = document.find(word)
-            char_format = selection.charFormat()
-            return char_format.foreground().color().name(), char_format.background().color().name()
-
-        self.assertEqual(colors("blue")[0], "#247bff")
-        self.assertEqual(colors("green")[0], "#00ff00")
-        self.assertEqual(colors("plain")[0], "#e1eaf4")
-        self.assertEqual(colors("highlight")[1], "#c9a227")
-
-    def test_plain_prompt_uses_host_and_path_colors_without_overriding_ansi(self):
-        workspace = self.workspace
-        workspace.set_nodes([("primary", "cft02")])
-        session_id = workspace.add_terminal("primary")
-        pane = workspace.terminal_tabs.widget(0)
-        workspace.append_output(session_id, "huajiannan@cft02:~")
-        workspace.append_output(session_id, "$ ls\r\r\n\x1b[01;34mcode_depo\x1b[0m")
-        document = pane.output.document()
-        host = document.find("huajiannan@cft02:")
-        path = document.find("~")
-        folder = document.find("code_depo")
-        self.assertEqual(host.charFormat().foreground().color().name(), "#00e500")
-        self.assertEqual(path.charFormat().foreground().color().name(), "#247bff")
-        self.assertEqual(folder.charFormat().foreground().color().name(), "#247bff")
-        self.assertNotIn("ls\n\ncode_depo", pane.output.toPlainText())
-
-        workspace.append_output(session_id, "\r")
-        workspace.append_output(session_id, "\r\nnext")
-        self.assertIn("code_depo\nnext", pane.output.toPlainText())
-
-    def test_terminal_output_sends_keystrokes_directly(self):
-        workspace = self.workspace
-        workspace.set_nodes([("primary", "cft01")])
-        session_id = workspace.add_terminal("primary")
-        sent = []
-        workspace.inputRequested.connect(lambda sid, data: sent.append((sid, data)))
-        pane = workspace.terminal_tabs.widget(0)
-        QTest.keyClicks(pane.output, "cd /tmp")
-        QTest.keyClick(pane.output, Qt.Key.Key_Backspace)
-        QTest.keyClick(pane.output, Qt.Key.Key_Up)
-        QTest.keyClick(pane.output, Qt.Key.Key_Return)
-        QTest.keyClick(pane.output, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
-        QTest.keyClick(pane.output, Qt.Key.Key_D, Qt.KeyboardModifier.ControlModifier)
-        self.assertEqual(sent, [
-            *((session_id, character.encode()) for character in "cd /tmp"),
-            (session_id, b"\x7f"), (session_id, b"\x1b[A"), (session_id, b"\r"),
-            (session_id, b"\x03"), (session_id, b"\x04"),
-        ])
-
-    def test_terminal_tab_goes_to_remote_shell_for_completion(self):
-        workspace = self.workspace
-        workspace.set_nodes([("primary", "cft01")])
-        session_id = workspace.add_terminal("primary")
-        sent = []
-        workspace.inputRequested.connect(lambda sid, data: sent.append((sid, data)))
-        QTest.keyClick(workspace._views[session_id].output, Qt.Key.Key_Tab)
-        self.assertEqual(sent, [(session_id, b"\t")])
 
     def test_command_helpers_replace_broadcast_draft_without_sending(self):
         workspace = self.workspace
@@ -423,110 +395,3 @@ class TerminalWorkspaceTests(unittest.TestCase):
         workspace.command_helpers[7].click()
         self.assertEqual(workspace.broadcast_input.text(), "pwd")
         self.assertEqual(len(sent), 2)
-
-    def test_pty_echo_backspace_and_carriage_return_edit_one_line(self):
-        workspace = self.workspace
-        workspace.set_nodes([("primary", "cft01")])
-        session_id = workspace.add_terminal("primary")
-        workspace.append_output(session_id, "user@cft01:~$ tesx")
-        workspace.append_output(session_id, "\b \b")
-        workspace.append_output(session_id, "t\r\nresult\r\r\n")
-        pane = workspace.terminal_tabs.widget(0)
-        self.assertIn("user@cft01:~$ test\nresult\n", pane.output.toPlainText())
-        self.assertNotIn("tesx", pane.output.toPlainText())
-
-    def test_progress_updates_rewrite_previous_lines(self):
-        workspace = self.workspace
-        workspace.set_nodes([("primary", "cft01")])
-        session_id = workspace.add_terminal("primary")
-        workspace.append_output(session_id, "qt | 0%\r\nprompt-toolkit | 0%\r\n")
-        workspace.append_output(session_id, "\x1b[2A\rqt | 46%\x1b[K\x1b[2B")
-        workspace.append_output(session_id, "\x1b[1A\rprompt-toolkit | 22%\x1b[K\x1b[1B")
-        self.assertEqual(workspace._views[session_id].combined_text(),
-                         "qt | 46%\nprompt-toolkit | 22%\n")
-        workspace.append_output(session_id, "\x1b[1A\r")
-        workspace.append_output(session_id, "\x1b[2Kprompt-toolkit | 100%\x1b[1B")
-        self.assertEqual(workspace._views[session_id].combined_text(),
-                         "qt | 46%\nprompt-toolkit | 100%\n")
-
-    def test_visible_cursor_and_remote_bell(self):
-        workspace = self.workspace
-        workspace.set_nodes([("primary", "cft01")])
-        session_id = workspace.add_terminal("primary")
-        workspace.resize(900, 500)
-        workspace.show()
-        self.app.processEvents()
-        pane = workspace.terminal_tabs.widget(0)
-        pane.output.setFocus()
-        workspace.append_output(session_id, "user@cft01:~$ ")
-        self.app.processEvents()
-        self.assertTrue(pane.output._cursor_marker.isVisible())
-        self.assertGreater(pane.output._cursor_marker.geometry().x(), 0)
-        pane.output._blink_cursor()
-        self.assertFalse(pane.output._cursor_marker.isVisible())
-
-        bell_events = []
-        pane.bellRequested.connect(lambda: bell_events.append(True))
-        with patch("nodebridge.terminal_workspace.QApplication.beep") as beep:
-            workspace.append_output(session_id, "\a")
-        beep.assert_called_once_with()
-        self.assertEqual(bell_events, [True])
-        self.assertNotIn("\a", pane.output.toPlainText())
-        workspace.mark_terminal_closed(session_id)
-        self.assertFalse(pane.output._cursor_marker.isVisible())
-
-    def test_left_at_plain_prompt_bells_once_even_if_remote_also_bells(self):
-        workspace = self.workspace
-        workspace.set_nodes([("primary", "cft01")])
-        session_id = workspace.add_terminal("primary")
-        pane = workspace.terminal_tabs.widget(0)
-        workspace.append_output(session_id, "user@cft01:~$ ")
-        sent = []
-        workspace.inputRequested.connect(lambda sid, data: sent.append((sid, data)))
-        with patch("nodebridge.terminal_workspace.QApplication.beep") as beep:
-            QTest.keyClick(pane.output, Qt.Key.Key_Left)
-            workspace.append_output(session_id, "\a")
-        beep.assert_called_once_with()
-        self.assertEqual(sent, [(session_id, b"\x1b[D")])
-
-    def test_scrollback_stays_put_while_new_output_arrives(self):
-        workspace = self.workspace
-        workspace.set_nodes([("primary", "cft01")])
-        session_id = workspace.add_terminal("primary")
-        workspace.resize(900, 350)
-        workspace.show()
-        self.app.processEvents()
-        pane = workspace.terminal_tabs.widget(0)
-        workspace.append_output(session_id, "".join(f"line {number}\n" for number in range(100)))
-        scrollbar = pane.output.verticalScrollBar()
-        self.assertGreater(scrollbar.maximum(), 0)
-        scrollbar.setValue(0)
-        workspace.append_output(session_id, "new output\n")
-        self.assertEqual(scrollbar.value(), 0)
-        self.assertIn("new output", pane.output.toPlainText())
-        pane.output.setFocus()
-        pane.output._blink_cursor()
-        self.assertFalse(pane.output._cursor_marker.isVisible())
-        sent = []
-        workspace.inputRequested.connect(lambda sid, data: sent.append((sid, data)))
-        QTest.keyClick(pane.output, Qt.Key.Key_PageDown, Qt.KeyboardModifier.ShiftModifier)
-        self.assertGreater(scrollbar.value(), 0)
-        self.assertEqual(sent, [])
-
-    def test_font_zoom_updates_pty_dimensions(self):
-        workspace = self.workspace
-        workspace.set_nodes([("primary", "cft01")])
-        session_id = workspace.add_terminal("primary")
-        workspace.resize(900, 450)
-        workspace.show()
-        self.app.processEvents()
-        pane = workspace.terminal_tabs.widget(0)
-        initial = pane.terminal_size()
-        resized = []
-        workspace.resizeRequested.connect(lambda sid, cols, rows: resized.append((sid, cols, rows)))
-        QTest.keyClick(pane.output, Qt.Key.Key_Plus, Qt.KeyboardModifier.ControlModifier)
-        self.assertTrue(resized)
-        self.assertEqual(resized[-1][0], session_id)
-        self.assertLessEqual(resized[-1][1], initial[0])
-        QTest.keyClick(pane.output, Qt.Key.Key_0, Qt.KeyboardModifier.ControlModifier)
-        self.assertEqual(pane.output.font().pointSize(), 10)

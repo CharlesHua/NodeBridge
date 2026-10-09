@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import posixpath
 from PySide6.QtCore import QMimeData, QSignalBlocker, Qt, Signal
-from PySide6.QtGui import QDrag
+from PySide6.QtGui import QBrush, QColor, QDrag
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -103,6 +103,7 @@ class WorkerBrowser(QWidget):
     connectRequested = Signal()
     disconnectRequested = Signal()
     browseRequested = Signal(str)
+    createDirectoryRequested = Signal()
 
     @property
     def drag_token(self) -> str:
@@ -112,6 +113,9 @@ class WorkerBrowser(QWidget):
         super().__init__(parent)
         self._aliases: list[str] = []
         self._connected: set[str] = set()
+        self._probe_status: dict[str, tuple[str, str]] = {}
+        self._hash_results: dict[tuple[str, str], str] = {}
+        self._hash_details: dict[tuple[str, str], str] = {}
         self._listings: dict[str, DirectoryListing] = {}
         self._focused: str | None = None
         self._merged_path = ""
@@ -160,10 +164,13 @@ class WorkerBrowser(QWidget):
         navigation.addWidget(self.path_edit, 1)
         self.up_button = QPushButton("上一级")
         self.refresh_button = QPushButton("刷新")
+        self.create_directory_button = QPushButton("新建目录")
         self.up_button.clicked.connect(self._up)
         self.refresh_button.clicked.connect(self._browse_path)
+        self.create_directory_button.clicked.connect(self.createDirectoryRequested)
         navigation.addWidget(self.up_button)
         navigation.addWidget(self.refresh_button)
+        navigation.addWidget(self.create_directory_button)
         layout.addLayout(navigation)
 
         panes = QSplitter(Qt.Orientation.Horizontal)
@@ -204,6 +211,7 @@ class WorkerBrowser(QWidget):
             button.setEnabled(connected and not busy)
         self.disconnect_button.setEnabled(bool(self._connected) and not busy)
         self.table.setEnabled(bool(self._connected) and not busy)
+        self.create_directory_button.setEnabled(bool(self._connected) and connected and not busy)
         for widget in (self.path_edit, self.up_button, self.refresh_button):
             widget.setEnabled(bool(self._connected) and not busy)
 
@@ -219,12 +227,35 @@ class WorkerBrowser(QWidget):
         self._aliases = sorted(set(self._aliases).union(aliases), key=str.casefold)
         self.nodes.clear()
         for alias in self._aliases:
-            item = QTreeWidgetItem(self.nodes, [alias, "● 已连接" if alias in self._connected else "○ 未连接"])
+            state, detail = self._probe_status.get(alias, ("unknown", "尚未检测 SSH 可连接性"))
+            label = {
+                "checking": "… 检测中", "reachable": "○ 可连接",
+                "unreachable": "○ 不可连接", "untrusted": "○ 主机密钥待核验",
+                "auth": "○ 认证失败", "error": "○ 检测失败",
+            }.get(state, "○ 未检测")
+            item = QTreeWidgetItem(self.nodes, [
+                alias, "● 已连接" if alias in self._connected else label,
+            ])
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(0, Qt.CheckState.Checked if alias in checked else Qt.CheckState.Unchecked)
+            if alias not in self._connected:
+                item.setToolTip(0, detail)
+                item.setToolTip(1, detail)
+                if state in {"unreachable", "untrusted", "auth", "error"}:
+                    gray = QBrush(QColor("#888888"))
+                    item.setForeground(0, gray)
+                    item.setForeground(1, gray)
             if alias == current:
                 self.nodes.setCurrentItem(item)
         self.summary.setText(f"发现 {len(self._aliases)} 个候选别名；已连接 {len(self._connected)} 个。")
+
+    def set_probe_status(self, alias: str, state: str, detail: str = "") -> None:
+        self._probe_status[alias] = (state, detail)
+        self.set_aliases([alias])
+
+    def set_probe_statuses(self, statuses: dict[str, tuple[str, str]]) -> None:
+        self._probe_status.update(statuses)
+        self.set_aliases(list(statuses))
 
     def checked_aliases(self) -> list[str]:
         return [
@@ -255,6 +286,8 @@ class WorkerBrowser(QWidget):
         return self._rendered_path
 
     def set_connection(self, alias: str, listing: DirectoryListing | None) -> None:
+        self._hash_results.clear()
+        self._hash_details.clear()
         if listing is None:
             self._connected.discard(alias)
             self._listings.pop(alias, None)
@@ -270,12 +303,74 @@ class WorkerBrowser(QWidget):
 
     def set_listing(self, alias: str, listing: DirectoryListing) -> None:
         self._listings[alias] = listing
+        self._hash_results.clear()
+        self._hash_details.clear()
+        self.render()
+
+    def set_listings(self, listings: dict[str, DirectoryListing],
+                     failed_aliases: list[str] | tuple[str, ...] = ()) -> None:
+        self._hash_results.clear()
+        self._hash_details.clear()
+        for alias in failed_aliases:
+            self._listings.pop(alias, None)
+        self._listings.update(listings)
+        self.render()
+
+    def set_hash_results(self, path: str, results: list[dict]) -> None:
+        labels = {"same": "内容相同", "different": "内容不同", "missing": "部分缺失",
+                  "changed": "读取期间变化", "unsupported": "非普通文件", "error": "读取失败"}
+        for result in results:
+            self._hash_results[(path, result["name"])] = labels[result["result"]]
+            issues = [f"{alias}：{node['detail']}" for alias, node in result.get("nodes", {}).items()
+                      if node["state"] != "ok"]
+            if issues:
+                self._hash_details[(path, result["name"])] = "\n".join(issues)
+        self.render()
+
+    def auto_hash_candidates(self) -> tuple[str, list[str], list[str]]:
+        """Only hash regular, same-size files present on every listed node."""
+        path = self.path_edit.text().strip()
+        aliases = sorted(self._connected, key=str.casefold)
+        if self.mode.currentIndex() != 0 or len(aliases) < 2 or not path.startswith("/"):
+            return path, [], []
+        listings = {alias: self._listings.get(alias) for alias in aliases}
+        if any(listing is None or listing.path != path for listing in listings.values()):
+            return path, [], []
+        files: dict[str, list[RemoteEntry]] = {}
+        for listing in listings.values():
+            for entry in listing.entries:
+                if not entry.is_dir and not entry.is_symlink:
+                    files.setdefault(entry.name, []).append(entry)
+        names = [name for name, entries in files.items()
+                 if len(entries) == len(aliases)
+                 and entries[0].size is not None
+                 and len({entry.size for entry in entries}) == 1]
+        return path, aliases, sorted(names, key=str.casefold)
+
+    def hash_listing_snapshots(
+        self, path: str, aliases: list[str], names: list[str],
+    ) -> dict[str, dict[str, RemoteEntry]]:
+        wanted = set(names)
+        return {
+            alias: {entry.name: entry for entry in self._listings[alias].entries
+                    if entry.name in wanted}
+            for alias in aliases
+            if alias in self._listings and self._listings[alias].path == path
+        }
+
+    def set_hash_pending(self, path: str, names: list[str], label: str = "等待校验") -> None:
+        for name in names:
+            self._hash_results[(path, name)] = label
+            self._hash_details.pop((path, name), None)
         self.render()
 
     def clear_connections(self, preserve_aliases: bool = False) -> None:
         aliases = list(self._aliases) if preserve_aliases else []
         self._connected.clear()
         self._listings.clear()
+        self._probe_status.clear()
+        self._hash_results.clear()
+        self._hash_details.clear()
         self._focused = None
         self.nodes.clear()
         self.nodes.reset_range_anchor()
@@ -291,6 +386,8 @@ class WorkerBrowser(QWidget):
         if listing is not None and self.mode.currentIndex() == 1:
             self.path_edit.setText(listing.path)
         self.render()
+        if self.mode.currentIndex() == 1 and self._focused in self._connected:
+            self._browse_path()
 
     def _mode_changed(self, index: int) -> None:
         if index == 1:
@@ -301,6 +398,8 @@ class WorkerBrowser(QWidget):
         elif self._merged_path:
             self.path_edit.setText(self._merged_path)
         self.render()
+        if self._connected:
+            self._browse_path()
 
     def _browse_path(self) -> None:
         path = self.path_edit.text().strip()
@@ -347,10 +446,20 @@ class WorkerBrowser(QWidget):
             size = "" if is_dir or len(sizes) != 1 or sample.size is None else f"{sample.size:,}"
             suffix = posixpath.splitext(name)[1].lstrip(".").upper()
             kind = "文件夹" if is_dir else "符号链接" if is_symlink else f"{suffix} 文件" if suffix else "文件"
-            count = f"{len(entries)} / {len(listings)}" if len(aliases) > 1 else entries[0][0]
-            difference = "缺失" if len(entries) < len(listings) else "大小不同" if len(sizes) > 1 else "内容未校验"
+            count = f"{len(entries)} / {len(aliases)}" if len(aliases) > 1 else entries[0][0]
+            difference = ("有节点未读取" if len(listings) < len(aliases)
+                          else "缺失" if len(entries) < len(listings)
+                          else "大小不同" if len(sizes) > 1 else "内容未校验")
+            if is_dir:
+                difference = "目录未递归核对" if len(aliases) > 1 else ""
+            elif is_symlink:
+                difference = "符号链接未核对" if len(aliases) > 1 else ""
+            if len(aliases) > 1 and len(listings) < len(aliases):
+                difference = "有节点未读取"
             if len(aliases) == 1:
                 difference = ""
+            elif (path, name) in self._hash_results:
+                difference = self._hash_results[(path, name)]
             values = (name, size, kind, count, difference)
             row = self.table.rowCount()
             self.table.insertRow(row)
@@ -362,6 +471,8 @@ class WorkerBrowser(QWidget):
                         item.setData(PATH_ROLE, posixpath.join(path, name))
                 if column == 1:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                if column == 4 and (path, name) in self._hash_details:
+                    item.setToolTip(self._hash_details[(path, name)])
                 self.table.setItem(row, column, item)
         self._render_tree(path, groups)
         self.summary.setText(

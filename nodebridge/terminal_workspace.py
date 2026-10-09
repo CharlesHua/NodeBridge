@@ -3,50 +3,29 @@
 from __future__ import annotations
 
 import re
-import time
 from dataclasses import dataclass
 
-from PySide6.QtCore import QEvent, QSignalBlocker, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor, QTextDocumentFragment
+from PySide6.QtCore import QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QComboBox, QHBoxLayout, QLabel, QLineEdit,
-    QInputDialog, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSizePolicy, QSplitter, QTabBar, QTabWidget,
+    QInputDialog, QMenu, QMessageBox, QPushButton, QSizePolicy, QSplitter, QTabBar, QTabWidget,
     QToolBar, QToolButton,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from nodebridge.node_check_tree import NodeCheckTree
+from nodebridge.remote_terminal_widget import RemoteTerminalWidget
 
 
 ITEM_ROLE = Qt.ItemDataRole.UserRole
 ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
-PLAIN_PROMPT = re.compile(r"^([^\s@:]+@[^\s@:]+:)([^\s$#]*)([$#])")
-DEFAULT_TEXT_COLOR = QColor("#e1eaf4")
-PROMPT_HOST_COLOR = QColor("#00e500")
-PROMPT_PATH_COLOR = QColor("#247bff")
-ANSI_COLORS = (
-    "#1b1f23", "#cd3131", "#00a800", "#c9a227",
-    "#2458bd", "#bc3fbc", "#20a4a4", "#d8dee9",
-    "#697782", "#f87171", "#00e500", "#e3c64a",
-    "#247bff", "#d783e8", "#56d4d4", "#ffffff",
-)
+PLAIN_PROMPT = re.compile(r"^(?:\([^()\r\n]+\)[ \t]+)*([^\s@:]+@[^\s@:]+:)([^\s$#]*)([$#])")
 
 
 def _node_order(label: str) -> tuple[tuple[int, str | int], ...]:
     """Sort cft2 before cft10, independently of SSH reply timing."""
     return tuple((0, int(part)) if part.isdecimal() else (1, part.casefold())
                  for part in re.split(r"(\d+)", label) if part)
-
-
-def _ansi_color(index: int) -> QColor:
-    if index < 16:
-        return QColor(ANSI_COLORS[index])
-    if index < 232:
-        index -= 16
-        levels = (0, 95, 135, 175, 215, 255)
-        return QColor(levels[index // 36], levels[(index // 6) % 6], levels[index % 6])
-    shade = 8 + (index - 232) * 10
-    return QColor(shade, shade, shade)
 
 
 @dataclass(frozen=True)
@@ -64,15 +43,15 @@ class TerminalGroup:
     node_ids: list[str]
     members: list[str]
     selected: set[str]
+    ignore_conda_mismatch: bool = False
 
 
 @dataclass
 class CombinedResult:
     session_id: str
     node_id: str
-    start: int
-    end: int | None = None
-    saved: QTextDocumentFragment | None = None
+    text: str = ""
+    complete: bool = False
 
 
 @dataclass
@@ -81,430 +60,43 @@ class CombinedRound:
     results: list[CombinedResult]
 
 
-class TerminalOutput(QPlainTextEdit):
-    """Read-only display that forwards keys directly to its PTY."""
-
-    inputRequested = Signal(bytes)
-    fontSizeChanged = Signal()
-    boundaryBellRequested = Signal()
-    inputFocused = Signal()
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setReadOnly(True)
-        self._input_enabled = True
-        self._initial_font_size = self.font().pointSize()
-        self.document().setMaximumBlockCount(10000)
-        self.setToolTip("直接输入；Ctrl+C 中断，Ctrl+Shift+C 复制，Ctrl+V 粘贴")
-        self._terminal_cursor = self.textCursor()
-        self._cursor_in_view = False
-        self._cursor_marker = QWidget(self.viewport())
-        self._cursor_marker.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self._cursor_marker.setStyleSheet("background: #dcecff;")
-        self._cursor_marker.hide()
-        self._cursor_timer = QTimer(self)
-        self._cursor_timer.setInterval(500)
-        self._cursor_timer.timeout.connect(self._blink_cursor)
-
-    def set_input_enabled(self, enabled: bool) -> None:
-        self._input_enabled = enabled
-        if not enabled:
-            self._cursor_timer.stop()
-            self._cursor_marker.hide()
-        elif self.hasFocus():
-            self._cursor_timer.start()
-            self.update_terminal_cursor(self._terminal_cursor)
-
-    def update_terminal_cursor(self, cursor: QTextCursor) -> None:
-        self._terminal_cursor = QTextCursor(cursor)
-        rect = self.cursorRect(cursor)
-        viewport = self.viewport().rect()
-        if rect.bottom() < viewport.top() or rect.top() > viewport.bottom():
-            self._cursor_in_view = False
-            self._cursor_marker.hide()
-            return
-        self._cursor_in_view = True
-        self._cursor_marker.setGeometry(rect.x(), rect.y(), 2, max(12, rect.height()))
-        self._cursor_marker.raise_()
-        self._cursor_marker.setVisible(self._input_enabled and self.hasFocus())
-
-    def _blink_cursor(self) -> None:
-        if self._input_enabled and self.hasFocus() and self._cursor_in_view:
-            self._cursor_marker.setVisible(not self._cursor_marker.isVisible())
-
-    def _at_prompt_left_boundary(self) -> bool:
-        cursor = self._terminal_cursor
-        block = cursor.block()
-        match = PLAIN_PROMPT.match(block.text())
-        if match is None:
-            return False
-        suffix = block.text()[match.end():]
-        prompt_space = 1 if suffix.startswith(" ") else 0
-        return cursor.position() <= block.position() + match.end() + prompt_space
-
-    def focusInEvent(self, event) -> None:
-        super().focusInEvent(event)
-        self.inputFocused.emit()
-        if self._input_enabled:
-            self._cursor_timer.start()
-            self.update_terminal_cursor(self._terminal_cursor)
-
-    def focusOutEvent(self, event) -> None:
-        self._cursor_timer.stop()
-        self._cursor_marker.hide()
-        super().focusOutEvent(event)
-
-    def resizeEvent(self, event) -> None:
-        super().resizeEvent(event)
-        if hasattr(self, "_cursor_marker"):
-            self.update_terminal_cursor(self._terminal_cursor)
-
-    def scrollContentsBy(self, dx: int, dy: int) -> None:
-        super().scrollContentsBy(dx, dy)
-        if hasattr(self, "_cursor_marker"):
-            self.update_terminal_cursor(self._terminal_cursor)
-
-    def focusNextPrevChild(self, next: bool) -> bool:
-        # Qt handles Tab as focus traversal before keyPressEvent reaches the PTY.
-        if self._input_enabled:
-            self.inputRequested.emit(b"\t" if next else b"\x1b[Z")
-            return True
-        return super().focusNextPrevChild(next)
-
-    def keyPressEvent(self, event) -> None:
-        if not self._input_enabled:
-            super().keyPressEvent(event)
-            return
-        control = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
-        shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
-        alt = bool(event.modifiers() & Qt.KeyboardModifier.AltModifier)
-        key = event.key()
-        if control and shift and key == Qt.Key.Key_C:
-            self.copy()
-            return
-        if shift and key in (Qt.Key.Key_PageUp, Qt.Key.Key_PageDown):
-            scrollbar = self.verticalScrollBar()
-            direction = -1 if key == Qt.Key.Key_PageUp else 1
-            scrollbar.setValue(scrollbar.value() + direction * scrollbar.pageStep())
-            return
-        if control and key in (Qt.Key.Key_Plus, Qt.Key.Key_Equal, Qt.Key.Key_Minus, Qt.Key.Key_0):
-            if key == Qt.Key.Key_0:
-                font = self.font()
-                font.setPointSize(self._initial_font_size)
-                self.setFont(font)
-            elif key in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
-                self.zoomIn(1)
-            else:
-                self.zoomOut(1)
-            self.update_terminal_cursor(self._terminal_cursor)
-            self.fontSizeChanged.emit()
-            return
-        if control and key == Qt.Key.Key_V:
-            pasted = QApplication.clipboard().text().replace("\r\n", "\n").replace("\n", "\r")
-            if pasted:
-                self.inputRequested.emit(pasted.encode("utf-8"))
-            return
-        keys = {
-            Qt.Key.Key_Return: b"\r", Qt.Key.Key_Enter: b"\r",
-            Qt.Key.Key_Backspace: b"\x7f", Qt.Key.Key_Delete: b"\x1b[3~",
-            Qt.Key.Key_Tab: b"\t", Qt.Key.Key_Escape: b"\x1b",
-            Qt.Key.Key_Up: b"\x1b[A", Qt.Key.Key_Down: b"\x1b[B",
-            Qt.Key.Key_Right: b"\x1b[C", Qt.Key.Key_Left: b"\x1b[D",
-            Qt.Key.Key_Home: b"\x1b[H", Qt.Key.Key_End: b"\x1b[F",
-            Qt.Key.Key_PageUp: b"\x1b[5~", Qt.Key.Key_PageDown: b"\x1b[6~",
-        }
-        if control and Qt.Key.Key_A <= key <= Qt.Key.Key_Z:
-            data = bytes([key - Qt.Key.Key_A + 1])
-        elif not control and key in keys:
-            data = keys[key]
-        elif event.text() and not control:
-            data = (b"\x1b" if alt else b"") + event.text().encode("utf-8")
-        else:
-            super().keyPressEvent(event)
-            return
-        if key == Qt.Key.Key_Left and not control and self._at_prompt_left_boundary():
-            self.boundaryBellRequested.emit()
-        self.inputRequested.emit(data)
-
-
 class TerminalPane(QWidget):
-    """Display SSH output and send line input to one shell."""
+    """One SSH shell, rendered only by its local xterm.js frontend."""
 
     sendRequested = Signal(bytes)
     resizeRequested = Signal(int, int)
-    bellRequested = Signal()
 
     def __init__(self, node_label: str, title: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("terminalPane")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
-        self.output = TerminalOutput()
-        self.output.setObjectName("terminalOutput")
-        self.output.setFont(QFont("Consolas", 10))
-        self.output._initial_font_size = 10
-        self.output.setStyleSheet(
-            "QPlainTextEdit { background: #0c0c0c; color: #e1eaf4; border: 0; }"
-        )
-        self._banner = f"{node_label} · {title}\nSSH Shell 已连接。\n"
-        self.output.setPlainText(self._banner)
-        self.output.viewport().installEventFilter(self)
+        self.output = RemoteTerminalWidget()
         self.output.inputRequested.connect(self.sendRequested)
-        self.output.boundaryBellRequested.connect(self._ring_local_bell)
-        self.output.fontSizeChanged.connect(lambda: self.resizeRequested.emit(*self.terminal_size()))
-        layout.addWidget(self.output, 1)
-        self._ansi_pending = ""
-        self._ansi_foreground: int | QColor | None = None
-        self._ansi_background: int | QColor | None = None
-        self._ansi_bold = False
-        self._ansi_underline = False
-        self._pending_cr = False
-        self._terminal_cursor = self.output.textCursor()
-        self._terminal_cursor.movePosition(QTextCursor.MoveOperation.End)
-        self.output.update_terminal_cursor(self._terminal_cursor)
-        self._last_local_bell = 0.0
-
-    def _ring_local_bell(self) -> None:
-        self._last_local_bell = time.monotonic()
-        QApplication.beep()
-        self.bellRequested.emit()
+        self.output.resizeRequested.connect(self.resizeRequested)
+        self.output.bellRequested.connect(QApplication.beep)
+        layout.addWidget(self.output)
+        self._recent_output = ""
 
     def terminal_size(self) -> tuple[int, int]:
-        metrics = self.output.fontMetrics()
-        viewport = self.output.viewport().size()
-        return (
-            max(20, viewport.width() // max(1, metrics.horizontalAdvance("M"))),
-            max(4, viewport.height() // max(1, metrics.lineSpacing())),
-        )
+        return self.output.terminal_size
 
-    def combined_text(self) -> str:
-        content = self.output.toPlainText()
-        return content[len(self._banner):] if content.startswith(self._banner) else content
+    def append_output(self, text: str) -> None:
+        self._recent_output = (self._recent_output + text)[-8192:]
+        self.output.write(text)
 
-    def eventFilter(self, watched, event) -> bool:
-        if watched is self.output.viewport() and event.type() == QEvent.Type.Resize:
-            columns, rows = self.terminal_size()
-            self.resizeRequested.emit(columns, rows)
-        return super().eventFilter(watched, event)
+    def prompt_line(self) -> str:
+        # This small text probe is only for deciding whether a broadcast cwd check
+        # may be sent. Screen/cursor/ANSI state belongs solely to xterm.js.
+        plain = ANSI_ESCAPE.sub("", self._recent_output)
+        return re.split(r"\r\n|\n|\r", plain)[-1]
 
-    def append_ansi(self, text: str) -> None:
-        """Append colored SGR output, preserving sequences split across SSH reads."""
-        data = self._ansi_pending + text
-        self._ansi_pending = ""
-        cursor = self._terminal_cursor
-        scrollbar = self.output.verticalScrollBar()
-        old_scroll = scrollbar.value()
-        follow_output = old_scroll >= scrollbar.maximum() - 2
-        first_block = cursor.blockNumber()
-        offset = 0
-        while offset < len(data):
-            escape = data.find("\x1b", offset)
-            if escape < 0:
-                self._insert_output(cursor, data[offset:])
-                break
-            self._insert_output(cursor, data[offset:escape])
-            match = ANSI_ESCAPE.match(data, escape)
-            if match is not None:
-                sequence = match.group()
-                if self._pending_cr:
-                    cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock)
-                    self._pending_cr = False
-                if sequence.startswith("\x1b[") and sequence.endswith("m"):
-                    self._apply_sgr(sequence[2:-1])
-                elif sequence.startswith("\x1b[") and sequence.endswith("J"):
-                    if sequence[2:-1] in ("2", "3"):
-                        self.output.clear()
-                        cursor = self.output.textCursor()
-                        cursor.movePosition(QTextCursor.MoveOperation.End)
-                        first_block = 0
-                elif sequence.startswith("\x1b[") and sequence.endswith("K"):
-                    if sequence[2:-1] in ("", "0"):
-                        cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock,
-                                            QTextCursor.MoveMode.KeepAnchor)
-                        cursor.removeSelectedText()
-                    elif sequence[2:-1] == "2":
-                        cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock)
-                        cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock,
-                                            QTextCursor.MoveMode.KeepAnchor)
-                        cursor.removeSelectedText()
-                elif sequence.startswith("\x1b[") and sequence[-1] in ("C", "D"):
-                    steps = int(sequence[2:-1] or "1") if (sequence[2:-1] or "1").isdecimal() else 1
-                    operation = (QTextCursor.MoveOperation.NextCharacter if sequence[-1] == "C"
-                                 else QTextCursor.MoveOperation.PreviousCharacter)
-                    for _ in range(min(steps, 1000)):
-                        if (sequence[-1] == "C" and cursor.atBlockEnd()) or (
-                            sequence[-1] == "D" and cursor.atBlockStart()
-                        ):
-                            break
-                        cursor.movePosition(operation)
-                elif sequence.startswith("\x1b[") and sequence[-1] in ("A", "B", "E", "F"):
-                    amount = sequence[2:-1] or "1"
-                    steps = int(amount) if amount.isdecimal() else 1
-                    direction = -1 if sequence[-1] in ("A", "F") else 1
-                    column = cursor.position() - cursor.block().position()
-                    block = cursor.block()
-                    for _ in range(min(steps, 1000)):
-                        next_block = block.previous() if direction < 0 else block.next()
-                        if not next_block.isValid():
-                            break
-                        block = next_block
-                    if sequence[-1] in ("E", "F"):
-                        column = 0
-                    cursor.setPosition(block.position() + min(column, len(block.text())))
-                    first_block = min(first_block, cursor.blockNumber())
-                elif sequence.startswith("\x1b[") and sequence.endswith("G"):
-                    amount = sequence[2:-1] or "1"
-                    column = max(1, int(amount)) - 1 if amount.isdecimal() else 0
-                    cursor.setPosition(cursor.block().position() + min(column, len(cursor.block().text())))
-                offset = match.end()
-            elif data[escape:].startswith(("\x1b[", "\x1b]")) or escape == len(data) - 1:
-                self._ansi_pending = data[escape:]
-                break
-            else:
-                offset = escape + 1
-        self._terminal_cursor = cursor
-        self.output.setTextCursor(cursor)
-        if not follow_output:
-            scrollbar.setValue(old_scroll)
-        self.output.update_terminal_cursor(cursor)
-        self._color_plain_prompts(first_block)
-
-    def _insert_output(self, cursor: QTextCursor, text: str) -> None:
-        if not text:
-            return
-        char_format = QTextCharFormat()
-        foreground = self._ansi_foreground
-        background = self._ansi_background
-        if isinstance(foreground, int):
-            foreground = _ansi_color(foreground + (8 if self._ansi_bold and foreground < 8 else 0))
-        char_format.setForeground(foreground or DEFAULT_TEXT_COLOR)
-        if isinstance(background, int):
-            background = _ansi_color(background)
-        if background is not None:
-            char_format.setBackground(background)
-        char_format.setFontWeight(QFont.Weight.Bold if self._ansi_bold else QFont.Weight.Normal)
-        char_format.setFontUnderline(self._ansi_underline)
-        run: list[str] = []
-
-        def line_feed() -> None:
-            if cursor.block().next().isValid():
-                cursor.movePosition(QTextCursor.MoveOperation.NextBlock)
-                cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock)
-            else:
-                cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock)
-                cursor.insertText("\n", char_format)
-
-        def flush_run() -> None:
-            if not run:
-                return
-            value = "".join(run)
-            run.clear()
-            if cursor.atBlockEnd():
-                cursor.insertText(value, char_format)
-            else:
-                for character in value:
-                    if not cursor.atBlockEnd():
-                        cursor.deleteChar()
-                    cursor.insertText(character, char_format)
-
-        for character in text:
-            if character == "\r":
-                flush_run()
-                self._pending_cr = True
-                continue
-            if self._pending_cr:
-                self._pending_cr = False
-                if character == "\n":
-                    line_feed()
-                    continue
-                cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock)
-            if character == "\b":
-                flush_run()
-                if not cursor.atBlockStart():
-                    cursor.movePosition(QTextCursor.MoveOperation.PreviousCharacter)
-            elif character == "\a":
-                flush_run()
-                if time.monotonic() - self._last_local_bell > 0.5:
-                    QApplication.beep()
-                    self.bellRequested.emit()
-            elif character == "\n":
-                flush_run()
-                line_feed()
-            elif character >= " ":
-                run.append(character)
-        flush_run()
-
-    def _color_plain_prompts(self, first_block: int) -> None:
-        """Color unstyled Bash prompts without overriding colors sent by the server."""
-        document = self.output.document()
-        block = document.findBlockByNumber(first_block)
-        while block.isValid():
-            match = PLAIN_PROMPT.match(block.text())
-            if match is not None:
-                for group, color in ((1, PROMPT_HOST_COLOR), (2, PROMPT_PATH_COLOR)):
-                    if not match.group(group):
-                        continue
-                    start = block.position() + match.start(group)
-                    cursor = QTextCursor(document)
-                    cursor.setPosition(start)
-                    cursor.movePosition(QTextCursor.MoveOperation.NextCharacter,
-                                        QTextCursor.MoveMode.KeepAnchor)
-                    if cursor.charFormat().foreground().color() != DEFAULT_TEXT_COLOR:
-                        continue
-                    cursor.setPosition(block.position() + match.end(group),
-                                       QTextCursor.MoveMode.KeepAnchor)
-                    char_format = QTextCharFormat()
-                    char_format.setForeground(color)
-                    cursor.mergeCharFormat(char_format)
-            block = block.next()
-
-    def _apply_sgr(self, parameters: str) -> None:
-        values = [int(part) if part.isdecimal() else 0 for part in parameters.split(";")]
-        index = 0
-        while index < len(values):
-            code = values[index]
-            if code == 0:
-                self._ansi_foreground = None
-                self._ansi_background = None
-                self._ansi_bold = False
-                self._ansi_underline = False
-            elif code == 1:
-                self._ansi_bold = True
-            elif code == 22:
-                self._ansi_bold = False
-            elif code == 4:
-                self._ansi_underline = True
-            elif code == 24:
-                self._ansi_underline = False
-            elif 30 <= code <= 37:
-                self._ansi_foreground = code - 30
-            elif 90 <= code <= 97:
-                self._ansi_foreground = code - 90 + 8
-            elif code == 39:
-                self._ansi_foreground = None
-            elif 40 <= code <= 47:
-                self._ansi_background = code - 40
-            elif 100 <= code <= 107:
-                self._ansi_background = code - 100 + 8
-            elif code == 49:
-                self._ansi_background = None
-            elif code in (38, 48) and index + 2 < len(values):
-                target = "_ansi_foreground" if code == 38 else "_ansi_background"
-                mode = values[index + 1]
-                if mode == 5 and 0 <= values[index + 2] <= 255:
-                    setattr(self, target, values[index + 2])
-                    index += 2
-                elif mode == 2 and index + 4 < len(values):
-                    red, green, blue = values[index + 2:index + 5]
-                    if all(0 <= component <= 255 for component in (red, green, blue)):
-                        setattr(self, target, QColor(red, green, blue))
-                    index += 4
-            index += 1
+    def raw_prompt_line(self) -> str:
+        return re.split(r"\r\n|\n|\r", self._recent_output)[-1]
 
 
 class CombinedTerminalPane(QWidget):
-    """Read-only broadcast rounds with the original terminal text formatting."""
+    """Read-only xterm.js view of one group's broadcast replies in node order."""
 
     MAX_NODE_CHARS = 20000
 
@@ -512,37 +104,31 @@ class CombinedTerminalPane(QWidget):
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
-        self.output = QPlainTextEdit()
+        self.output = RemoteTerminalWidget(read_only=True)
         self.output.setObjectName("combinedTerminalOutput")
-        self.output.setReadOnly(True)
-        self.output.setFont(QFont("Consolas", 10))
-        self.output.setStyleSheet(
-            "QPlainTextEdit { background: #0c0c0c; color: #e1eaf4; border: 0; }"
-        )
         layout.addWidget(self.output)
+        self._rendered = ""
+        self.render([])
 
-    def render(self, rounds: list[tuple[list[QTextDocumentFragment], bool]]) -> None:
-        scrollbar = self.output.verticalScrollBar()
-        old_scroll = scrollbar.value()
-        follow_output = old_scroll >= scrollbar.maximum() - 2
-        self.output.clear()
-        cursor = QTextCursor(self.output.document())
+    def render(self, rounds: list[tuple[list[str], bool]]) -> None:
+        text = ""
         if not rounds:
-            cursor.insertText("广播命令的终端输出将在这里按节点顺序显示。\n")
+            text = "广播命令的终端输出将在这里按节点顺序显示。\r\n"
         for results, complete in rounds:
-            for fragment in results:
-                if fragment.isEmpty():
+            for reply in results:
+                if not reply:
                     continue
-                cursor.insertFragment(fragment)
-                if self.output.document().lastBlock().text():
-                    cursor.insertText("\n")
-            if complete and any(not fragment.isEmpty() for fragment in results):
-                cursor.insertText("\n")
-        self.output.setTextCursor(cursor)
-        if follow_output:
-            scrollbar.setValue(scrollbar.maximum())
+                text += reply
+                if not reply.endswith(("\r", "\n")):
+                    text += "\r\n"
+            if complete and any(results):
+                text += "\r\n"
+        if text.startswith(self._rendered):
+            self.output.write(text[len(self._rendered):])
         else:
-            scrollbar.setValue(min(old_scroll, scrollbar.maximum()))
+            self.output.reset_terminal()
+            self.output.write(text)
+        self._rendered = text
 
 
 class BoundedTerminalTabBar(QTabBar):
@@ -815,6 +401,10 @@ class TerminalWorkspace(QWidget):
         group = self._groups.get(group_id)
         return list(group.members) if group is not None else []
 
+    def session_node_label(self, session_id: str) -> str:
+        record = self._sessions.get(session_id)
+        return self.node_label(record.node_id) if record is not None else "未知节点"
+
     def _request_disconnect_group(self) -> None:
         group_id = self.active_group_id()
         if group_id is not None and self.group_sessions(group_id):
@@ -836,44 +426,22 @@ class TerminalWorkspace(QWidget):
         for round_ in self._combined_rounds.get(group_id, []):
             results = []
             for result in sorted(round_.results, key=lambda item: _node_order(self.node_label(item.node_id))):
-                results.append(self._round_fragment(result))
-            rounds.append((results, all(result.end is not None for result in round_.results)))
+                results.append(result.text)
+            rounds.append((results, all(result.complete for result in round_.results)))
         pane.render(rounds)
-
-    def _round_fragment(self, result: CombinedResult) -> QTextDocumentFragment:
-        if result.saved is not None:
-            return result.saved
-        view = self._views.get(result.session_id)
-        if view is None:
-            return QTextDocumentFragment()
-        document = view.output.document()
-        end = min(result.end if result.end is not None else document.characterCount() - 1,
-                  document.characterCount() - 1)
-        start = min(end, max(0, result.start, end - CombinedTerminalPane.MAX_NODE_CHARS))
-        cursor = QTextCursor(document)
-        cursor.setPosition(start)
-        cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
-        return QTextDocumentFragment(cursor)
 
     def begin_broadcast_round(self, group_id: str, command: str, targets: dict[str, str]) -> None:
         """Start a display round only after the command is approved for delivery."""
         rounds = self._combined_rounds.setdefault(group_id, [])
         for old in rounds:
             for result in old.results:
-                if result.end is None:
-                    view = self._views.get(result.session_id)
-                    if view is not None:
-                        result.end = view.output.document().characterCount() - 1
-                        result.saved = self._round_fragment(result)
+                result.complete = True
         results = []
         for node_id, session_id in targets.items():
             view = self._views.get(session_id)
             if view is not None:
-                document = view.output.document()
-                start = (document.lastBlock().position() if self.shell_ready(session_id)
-                         else document.characterCount() - 1)
-                results.append(CombinedResult(session_id, node_id,
-                                              start))
+                prompt = view.raw_prompt_line() if self.shell_ready(session_id) else ""
+                results.append(CombinedResult(session_id, node_id, prompt))
         if results:
             rounds.append(CombinedRound(command, results))
             if len(rounds) > 100:
@@ -917,7 +485,7 @@ class TerminalWorkspace(QWidget):
                 self.terminal_tabs.setTabToolTip(index, self.group_name(group.group_id))
 
     def add_terminal(self, node_id: str, title: str | None = None,
-                     group_id: str | None = None) -> str:
+                     group_id: str | None = None, *, activate: bool = True) -> str:
         """Register a connected shell after its channel has opened."""
         if node_id not in self._nodes:
             raise ValueError(f"节点未连接：{node_id}")
@@ -938,7 +506,8 @@ class TerminalWorkspace(QWidget):
             group.selected.add(session_id)
         self._refresh_groups(select=group_id)
         self._rebuild_tree(session_id=session_id)
-        self._show_tab(session_id)
+        self._show_tab(session_id, activate=activate)
+        self._refresh_node_tab_titles(node_id)
         return session_id
 
     def remove_terminal(self, session_id: str) -> None:
@@ -958,8 +527,7 @@ class TerminalWorkspace(QWidget):
         view = self._views.get(session_id)
         if view is not None:
             view.output.set_input_enabled(False)
-            view.output.moveCursor(QTextCursor.MoveOperation.End)
-            view.output.insertPlainText("\n[SSH Shell 已关闭；输出保留供查看]\n")
+            view.output.write("\r\n[SSH Shell 已关闭；输出保留供查看]\r\n")
         self._rebuild_tree(session_id=session_id)
         self._refresh_groups()
         self._update_command_helpers()
@@ -968,16 +536,16 @@ class TerminalWorkspace(QWidget):
         view = self._views.get(session_id)
         if view is None:
             return
-        view.append_ansi(text)
+        view.append_output(text)
         group_id = self._sessions[session_id].group_id
-        if self.shell_ready(session_id):
-            for round_ in reversed(self._combined_rounds.get(group_id, [])):
-                result = next((item for item in round_.results
-                               if item.session_id == session_id and item.end is None), None)
-                if result is not None:
-                    result.end = view.output.document().lastBlock().position()
-                    result.saved = self._round_fragment(result)
-                    break
+        for round_ in reversed(self._combined_rounds.get(group_id, [])):
+            result = next((item for item in round_.results
+                           if item.session_id == session_id and not item.complete), None)
+            if result is not None:
+                result.text = (result.text + text)[-CombinedTerminalPane.MAX_NODE_CHARS:]
+                if self.shell_ready(session_id):
+                    result.complete = True
+                break
         combined = self._combined_views.get(group_id)
         if combined is not None and self.terminal_tabs.indexOf(combined) >= 0:
             self._combined_timer.start()
@@ -1013,13 +581,32 @@ class TerminalWorkspace(QWidget):
         view = self._views.get(session_id)
         if view is None or session_id in self._closed_sessions:
             return False
-        line = view.output.document().lastBlock().text()
+        line = view.prompt_line()
         match = PLAIN_PROMPT.match(line)
         return match is not None and not line[match.end():].strip()
 
     def shell_prompt(self, session_id: str) -> str:
         view = self._views.get(session_id)
-        return view.output.document().lastBlock().text() if view is not None else ""
+        return view.prompt_line() if view is not None else ""
+
+    def conda_prefixes(self, session_id: str) -> tuple[str, ...] | None:
+        """Read visible environment prefixes from an idle, recognizable prompt."""
+        if not self.shell_ready(session_id):
+            return None
+        line = self.shell_prompt(session_id)
+        match = PLAIN_PROMPT.match(line)
+        if match is None:
+            return None
+        return tuple(re.findall(r"\(([^()\r\n]+)\)[ \t]+", line[:match.start(1)]))
+
+    def ignores_conda_mismatch(self, group_id: str) -> bool:
+        group = self._groups.get(group_id)
+        return bool(group and group.ignore_conda_mismatch)
+
+    def ignore_conda_mismatch(self, group_id: str) -> None:
+        group = self._groups.get(group_id)
+        if group is not None:
+            group.ignore_conda_mismatch = True
 
     def node_label(self, node_id: str) -> str:
         return self._nodes.get(node_id, node_id)
@@ -1188,7 +775,7 @@ class TerminalWorkspace(QWidget):
             return
         view = self._views[session_id]
         self.inputRequested.emit(session_id, b"\x05\x15" + snippet.encode("utf-8"))
-        view.output.setFocus()
+        view.output.focus_terminal()
 
     def _set_command_target(self, kind: str, session_id: str | None = None) -> None:
         self._command_target = (kind, session_id)
@@ -1203,7 +790,7 @@ class TerminalWorkspace(QWidget):
             view = self._views.get(session_id)
             if (view is not None and self.terminal_tabs.currentWidget() is view
                     and session_id not in self._closed_sessions and view.output._input_enabled
-                    and PLAIN_PROMPT.match(view.output.document().lastBlock().text())):
+                    and PLAIN_PROMPT.match(view.prompt_line())):
                 return target
         if self.broadcast_input.isEnabled():
             return ("broadcast", None)
@@ -1260,7 +847,7 @@ class TerminalWorkspace(QWidget):
         if column == 2:
             self._selection_changed()
 
-    def _show_tab(self, session_id: str) -> None:
+    def _show_tab(self, session_id: str, *, activate: bool = True) -> None:
         record = self._sessions[session_id]
         view = self._views.get(session_id)
         if view is None:
@@ -1277,13 +864,27 @@ class TerminalWorkspace(QWidget):
         if index < 0:
             index = self.terminal_tabs.addTab(view, self._terminal_tab_title(record))
             self.terminal_tabs.setTabToolTip(index, self.group_name(record.group_id))
+        if not activate:
+            return
         self.terminal_tabs.setCurrentIndex(index)
         self._set_command_target("terminal", session_id)
-        view.output.setFocus()
+        view.output.focus_terminal()
         self._selection_changed()
 
     def _terminal_tab_title(self, record: TerminalRecord) -> str:
-        return f"{self._groups[record.group_id].name} · {self.node_label(record.node_id)} · {record.title}"
+        title = f"{self._groups[record.group_id].name} · {self.node_label(record.node_id)}"
+        if sum(item.node_id == record.node_id for item in self._sessions.values()) > 1:
+            title += f" （{record.title}）"
+        return title
+
+    def _refresh_node_tab_titles(self, node_id: str) -> None:
+        for record in self._sessions.values():
+            if record.node_id != node_id:
+                continue
+            view = self._views.get(record.session_id)
+            index = self.terminal_tabs.indexOf(view) if view is not None else -1
+            if index >= 0:
+                self.terminal_tabs.setTabText(index, self._terminal_tab_title(record))
 
     def _populate_tab_list(self) -> None:
         self.tab_list_menu.clear()
@@ -1340,8 +941,8 @@ class TerminalWorkspace(QWidget):
         for rounds in self._combined_rounds.values():
             for round_ in rounds:
                 for result in round_.results:
-                    if result.session_id == session_id and result.saved is None:
-                        result.saved = self._round_fragment(result)
+                    if result.session_id == session_id:
+                        result.complete = True
         view = self._views.pop(session_id, None)
         if view is not None:
             index = self.terminal_tabs.indexOf(view)
@@ -1368,6 +969,8 @@ class TerminalWorkspace(QWidget):
                     combined.deleteLater()
             else:
                 self._combined_timer.start()
+        if terminal is not None:
+            self._refresh_node_tab_titles(terminal.node_id)
         self._update_command_helpers()
 
     def _update_broadcast_summary(self, _checked: bool = False) -> None:
