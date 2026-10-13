@@ -103,6 +103,7 @@ class WorkerBrowser(QWidget):
     connectRequested = Signal()
     disconnectRequested = Signal()
     browseRequested = Signal(str)
+    nodeSwitchRequested = Signal(str)
     createDirectoryRequested = Signal()
 
     @property
@@ -325,6 +326,10 @@ class WorkerBrowser(QWidget):
                       if node["state"] != "ok"]
             if issues:
                 self._hash_details[(path, result["name"])] = "\n".join(issues)
+            elif result.get("cached"):
+                self._hash_details[(path, result["name"])] = "复用最近 60 秒内的摘要；节点、路径、大小及修改时间未变化。"
+            else:
+                self._hash_details.pop((path, result["name"]), None)
         self.render()
 
     def auto_hash_candidates(self) -> tuple[str, list[str], list[str]]:
@@ -382,12 +387,9 @@ class WorkerBrowser(QWidget):
 
     def _focus_item(self, item: QTreeWidgetItem, _column: int) -> None:
         self._focused = item.text(0)
-        listing = self._listings.get(self._focused)
-        if listing is not None and self.mode.currentIndex() == 1:
-            self.path_edit.setText(listing.path)
         self.render()
         if self.mode.currentIndex() == 1 and self._focused in self._connected:
-            self._browse_path()
+            self.nodeSwitchRequested.emit(self.path_edit.text().strip())
 
     def _mode_changed(self, index: int) -> None:
         if index == 1:

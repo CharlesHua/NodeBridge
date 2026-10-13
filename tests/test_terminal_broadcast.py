@@ -78,6 +78,31 @@ class TerminalBroadcastTests(unittest.TestCase):
         self.assertEqual(records[-1]["context"]["sent_nodes"], ["cft02", "cft03"])
         self.assertNotIn("echo hello", self.window._activity_log.path.read_text(encoding="utf-8"))
 
+    def test_multiline_commands_keep_line_boundaries_for_each_terminal(self):
+        self.window.terminal_workspace.broadcast_input.setText("echo first\necho second")
+        tokens = self._begin()
+        self._answer(tokens, {self.first: "/work", self.second: "/work"})
+        self.assertEqual(self.sent[2:], [(self.first, b"echo first\recho second\r"),
+                                       (self.second, b"echo first\recho second\r")])
+        workspace = self.window.terminal_workspace
+        for sid, node in ((self.first, "cft02"), (self.second, "cft03")):
+            workspace.append_output(sid, f"echo first\r\nfirst\r\nuser@{node}:/work$ ")
+            workspace.append_output(sid, f"echo second\r\nsecond\r\nuser@{node}:/work$ ")
+        replies = workspace._combined_rounds[self.group_id][-1].results
+        self.assertTrue(all("\r\nsecond\r\n" in reply.text for reply in replies))
+        workspace.inputRequested.emit(self.first, b"x")
+        before = replies[0].text
+        workspace.append_output(self.first, "manual input")
+        self.assertEqual(replies[0].text, before)
+
+    def test_destructive_command_on_second_line_still_requires_confirmation(self):
+        self.window.terminal_workspace.broadcast_input.setText("pwd\nrm -r test")
+        tokens = self._begin()
+        with patch.object(QMessageBox, "warning", return_value=QMessageBox.StandardButton.Cancel) as warning:
+            self._answer(tokens, {self.first: "/work", self.second: "/work"})
+        warning.assert_called_once()
+        self.assertEqual(len(self.sent), 2)
+
     def test_conda_prefixed_prompts_still_allow_matching_directory_probe(self):
         workspace = self.window.terminal_workspace
         workspace.append_output(self.first, "\r\n(base) (condmat) user@cft02:/work$ ")

@@ -6,14 +6,16 @@ import re
 from dataclasses import dataclass
 
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QComboBox, QHBoxLayout, QLabel, QLineEdit,
+    QAbstractItemView, QApplication, QComboBox, QHBoxLayout, QLabel, QPlainTextEdit,
     QInputDialog, QMenu, QMessageBox, QPushButton, QSizePolicy, QSplitter, QTabBar, QTabWidget,
     QToolBar, QToolButton,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from nodebridge.node_check_tree import NodeCheckTree
+from nodebridge.command_dialog import DEFAULT_COMMANDS
 from nodebridge.remote_terminal_widget import RemoteTerminalWidget
 
 
@@ -52,6 +54,7 @@ class CombinedResult:
     node_id: str
     text: str = ""
     complete: bool = False
+    collect_multiline: bool = False
 
 
 @dataclass
@@ -146,8 +149,34 @@ class BoundedTerminalTabBar(QTabBar):
         return hint
 
 
-class BroadcastCommandInput(QLineEdit):
+class BroadcastCommandInput(QPlainTextEdit):
     inputFocused = Signal()
+    returnPressed = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self.setFixedHeight(76)
+        self.setTabChangesFocus(True)
+
+    def text(self):
+        return self.toPlainText()
+
+    def setText(self, text):
+        self.setPlainText(text)
+        self.setCursorPosition(len(text))
+
+    def setCursorPosition(self, position):
+        cursor = self.textCursor()
+        cursor.setPosition(position)
+        self.setTextCursor(cursor)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if not event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                self.returnPressed.emit()
+                event.accept()
+                return
+        super().keyPressEvent(event)
 
     def focusInEvent(self, event) -> None:
         super().focusInEvent(event)
@@ -169,6 +198,7 @@ class TerminalWorkspace(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._nodes: dict[str, str] = {}
+        self._node_statuses: dict[str, tuple[str, str]] = {}
         self._sessions: dict[str, TerminalRecord] = {}
         self._groups: dict[str, TerminalGroup] = {}
         self._next_group = 1
@@ -183,6 +213,7 @@ class TerminalWorkspace(QWidget):
         self._next_session = 1
         self._busy = False
         self._broadcast_busy = False
+        self.inputRequested.connect(self._end_multiline_capture)
         self._command_target: tuple[str, str | None] | None = None
 
         layout = QVBoxLayout(self)
@@ -294,7 +325,7 @@ class TerminalWorkspace(QWidget):
         command_row = QHBoxLayout()
         self.broadcast_input = BroadcastCommandInput()
         self.broadcast_input.setObjectName("terminalBroadcastInput")
-        self.broadcast_input.setPlaceholderText("仅向当前组勾选的终端发送；发送前检查工作目录")
+        self.broadcast_input.setPlaceholderText("Enter 发送，Shift+Enter 换行；仅发送给当前组勾选的终端")
         self.broadcast_input.setEnabled(False)
         self.broadcast_input.textChanged.connect(self._update_broadcast_summary)
         self.broadcast_input.returnPressed.connect(self._request_broadcast)
@@ -313,26 +344,36 @@ class TerminalWorkspace(QWidget):
         self.command_toolbar.addWidget(QLabel("常用命令："))
         self.command_toolbar.setToolTip("替换当前输入，不会立即执行")
         self.command_helpers: list[QPushButton] = []
-        for label, snippet in (
-            ("cd（进入目录）", "cd "),
-            ("mkdir（新建目录）", "mkdir "),
-            ("rm -r（删除目录及子目录）", "rm -r "),
-            ("cd ..（退回上级）", "cd .."),
-            ("ls（列出文件）", "ls"),
-            ("ls -a（含隐藏）", "ls -a"),
-            ("ls -lh（详细列表）", "ls -lh"),
-            ("pwd（当前路径）", "pwd"),
-        ):
-            button = QPushButton(label)
-            button.setEnabled(False)
-            button.clicked.connect(lambda _checked=False, value=snippet: self._insert_command_snippet(value))
-            self.command_helpers.append(button)
-            self.command_toolbar.addWidget(button)
+        self.set_commands(DEFAULT_COMMANDS)
         right_layout.addWidget(broadcast)
         right_layout.addWidget(self.command_toolbar)
         splitter.addWidget(right)
         splitter.setSizes([300, 900])
         layout.addWidget(splitter, 1)
+        self._rebuild_tree()
+
+    def set_commands(self, commands):
+        self.command_toolbar.clear()
+        self.command_helpers.clear()
+        self.command_toolbar.addWidget(QLabel("常用命令："))
+        for item in commands:
+            if not item["visible"]:
+                continue
+            label = item["command"].strip()
+            if item["description"]:
+                label += f"（{item['description']}）"
+            button = QPushButton(label)
+            button.clicked.connect(lambda _checked=False, value=item["command"]: self._insert_command_snippet(value))
+            self.command_helpers.append(button)
+            self.command_toolbar.addWidget(button)
+        self._update_command_helpers()
+
+    def set_node_statuses(self, statuses):
+        for node_id, status in statuses.items():
+            previous = self._node_statuses.get(node_id, ("unknown", ""))
+            if status[0] == "checking" and previous[0] in {"error", "unreachable", "untrusted", "auth"}:
+                continue
+            self._node_statuses[node_id] = status
         self._rebuild_tree()
 
     def set_nodes(self, nodes: list[tuple[str, str]]) -> None:
@@ -342,6 +383,7 @@ class TerminalWorkspace(QWidget):
             if record.node_id not in new_nodes:
                 self._remove_session(session_id)
         self._nodes = new_nodes
+        self._node_statuses = {key: value for key, value in self._node_statuses.items() if key in new_nodes}
         self._refresh_groups()
         self._rebuild_tree()
 
@@ -436,12 +478,14 @@ class TerminalWorkspace(QWidget):
         for old in rounds:
             for result in old.results:
                 result.complete = True
+                result.collect_multiline = False
         results = []
         for node_id, session_id in targets.items():
             view = self._views.get(session_id)
             if view is not None:
                 prompt = view.raw_prompt_line() if self.shell_ready(session_id) else ""
-                results.append(CombinedResult(session_id, node_id, prompt))
+                results.append(CombinedResult(session_id, node_id, prompt,
+                                              collect_multiline="\n" in command or "\r" in command))
         if results:
             rounds.append(CombinedRound(command, results))
             if len(rounds) > 100:
@@ -540,17 +584,25 @@ class TerminalWorkspace(QWidget):
         group_id = self._sessions[session_id].group_id
         for round_ in reversed(self._combined_rounds.get(group_id, [])):
             result = next((item for item in round_.results
-                           if item.session_id == session_id and not item.complete), None)
+                           if item.session_id == session_id and (not item.complete or item.collect_multiline)), None)
             if result is not None:
                 result.text = (result.text + text)[-CombinedTerminalPane.MAX_NODE_CHARS:]
-                if self.shell_ready(session_id):
-                    result.complete = True
+                result.complete = self.shell_ready(session_id)
                 break
         combined = self._combined_views.get(group_id)
         if combined is not None and self.terminal_tabs.indexOf(combined) >= 0:
             self._combined_timer.start()
         if self._command_target == ("terminal", session_id):
             self._update_command_helpers()
+
+    def _end_multiline_capture(self, session_id: str, _data: bytes) -> None:
+        # A multi-line send can produce several ordinary prompts. Keep gathering
+        # its output until the next broadcast or direct user input on that shell.
+        for rounds in self._combined_rounds.values():
+            for round_ in rounds:
+                for result in round_.results:
+                    if result.session_id == session_id:
+                        result.collect_multiline = False
 
     def terminal_size(self, session_id: str) -> tuple[int, int] | None:
         view = self._views.get(session_id)
@@ -812,6 +864,12 @@ class TerminalWorkspace(QWidget):
             for node_id, label in sorted(self._nodes.items(), key=lambda pair: pair[1].casefold()):
                 sessions = [record for record in self._sessions.values() if record.node_id == node_id]
                 node = QTreeWidgetItem(self.node_tree, [label, f"{len(sessions)} 个终端", ""])
+                status, detail = self._node_statuses.get(node_id, ("unknown", ""))
+                if status in {"error", "unreachable", "untrusted", "auth"}:
+                    node.setText(1, {"untrusted": "主机密钥待核验", "auth": "认证失败"}.get(status, "不可连接"))
+                    for column in (0, 1):
+                        node.setForeground(column, QColor("gray"))
+                        node.setToolTip(column, detail)
                 node.setData(0, ITEM_ROLE, ("node", node_id))
                 node.setFlags(node.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 node.setCheckState(2, Qt.CheckState.Checked if node_id in checked_nodes else Qt.CheckState.Unchecked)

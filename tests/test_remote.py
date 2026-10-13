@@ -1,14 +1,94 @@
 import io
 import shlex
 import stat
+import threading
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from nodebridge.remote import NodeConfig, RemoteSession, UnknownHostKeyError, VerifyHostKey
+from nodebridge.remote import NodeConfig, RemoteSession, TransferSessionPool, UnknownHostKeyError, VerifyHostKey
 
 
 class RemoteSessionTests(unittest.TestCase):
+    def test_transfer_pool_reuses_only_active_thread_connections(self):
+        config = NodeConfig("jump.example", 22, "alice")
+        hosts = []
+        peers = []
+        active = 0
+        peak = 0
+        lock = threading.Lock()
+
+        def connect_host(_config, _password):
+            host = Mock()
+            hosts.append(host)
+            return host
+
+        def connect_alias(_alias, _host):
+            peer = Mock()
+            peers.append(peer)
+            return peer
+
+        def copy_one(alias, pool):
+            nonlocal active, peak
+            with pool.worker(alias):
+                with lock:
+                    active += 1
+                    peak = max(peak, active)
+                time.sleep(0.01)
+                with lock:
+                    active -= 1
+
+        with (patch.object(RemoteSession, "connect_shell_host", side_effect=connect_host) as connect,
+              patch.object(RemoteSession, "connect_alias", side_effect=connect_alias) as alias_connect):
+            with TransferSessionPool(config, "password") as pool:
+                with ThreadPoolExecutor(max_workers=4) as executor:
+                    list(executor.map(lambda alias: copy_one(alias, pool),
+                                      [f"cft{number:02d}" for number in range(2, 38)]))
+
+        self.assertEqual(alias_connect.call_count, 36)
+        self.assertGreater(peak, 1)
+        self.assertLessEqual(peak, 4)
+        self.assertLessEqual(connect.call_count, 4)
+        self.assertTrue(all(call.args == (config, "password") for call in connect.call_args_list))
+        for peer in peers:
+            peer.close.assert_called_once_with()
+        for host in hosts:
+            host.close.assert_called_once_with()
+
+    def test_transfer_pool_reuses_host_for_nested_source_and_destination(self):
+        host = Mock()
+        worker = Mock()
+        with (patch.object(RemoteSession, "connect_shell_host", return_value=host) as connect,
+              patch.object(RemoteSession, "connect_alias", return_value=worker) as connect_alias):
+            with TransferSessionPool(NodeConfig("jump.example", 22, "alice")) as pool:
+                with pool.worker("cft02"):
+                    with pool.jump() as jump_peer:
+                        self.assertIs(jump_peer, host.open_sftp_peer.return_value)
+                with pool.worker("cft03"):
+                    pass
+        connect.assert_called_once()
+        self.assertEqual([call.args[1] for call in connect_alias.call_args_list], [host, host])
+        self.assertEqual(host.open_sftp_peer.call_count, 1)
+        host.close.assert_called_once_with()
+
+    def test_transfer_pool_releases_host_after_worker_open_fails(self):
+        host = Mock()
+        peer = Mock()
+        with (patch.object(RemoteSession, "connect_shell_host", return_value=host) as connect,
+              patch.object(RemoteSession, "connect_alias",
+                    side_effect=[OSError("worker unavailable"), peer])):
+            with TransferSessionPool(NodeConfig("jump.example", 22, "alice")) as pool:
+                with self.assertRaisesRegex(OSError, "worker unavailable"):
+                    with pool.worker("cft02"):
+                        pass
+                with pool.worker("cft03"):
+                    pass
+        connect.assert_called_once()
+        peer.close.assert_called_once_with()
+        host.close.assert_called_once_with()
+
     def test_sftp_peer_uses_separate_channel_without_closing_browse_session(self):
         client = Mock()
         browse_sftp = Mock()

@@ -1,5 +1,9 @@
 # Current status / 当前状态
 
+Indirect-node file connections now run independently of the ordinary file-job slot; local/direct actions remain available. Probe status is shared with the terminal node list and later connection success supersedes older probe replies. Broadcast supports Shift+Enter multiline editing, and Tools → Command Manager persists command text, optional descriptions, and visibility. Automatic hashes may reuse successful metadata-matching results for 60 seconds. These changes have focused local tests; cluster validation remains pending.
+
+间接节点文件连接现独立于普通文件任务位运行，本地／直连操作保持可用。探测状态同步至终端节点列表，后续连接成功优先于过期探测结果。广播支持 Shift+Enter 多行编辑，“工具 → 常用命令管理”持久保存命令文本、可选介绍和显示状态。自动哈希可在元数据匹配时复用 60 秒内的成功结果。这些改动已有定向本地测试，仍需在集群验证。
+
 This is the implementation snapshot audited on 2026-10-09. [USER_GUIDE.md](USER_GUIDE.md) explains usage, [ARCHITECTURE.md](ARCHITECTURE.md) explains the code, [DECISIONS.md](DECISIONS.md) records settled choices, and [TODO.md](TODO.md) tracks future work.
 
 这里是截至 2026-10-09 核对过的实现快照。[USER_GUIDE.md](USER_GUIDE.md) 说明使用方法，[ARCHITECTURE.md](ARCHITECTURE.md) 说明代码结构，[DECISIONS.md](DECISIONS.md) 记录已确定的选择，[TODO.md](TODO.md) 跟踪后续工作。
@@ -83,6 +87,10 @@ The repository now has a separate bilingual developer guide and a Chinese-only e
 Earlier check reports showed `ChannelException(2, 'Connect failed')` on some nodes while their SFTP sessions stayed connected. This was a jump-transport channel refusal, not evidence that the file was missing. Hash checks use a separate authenticated direct-node SSH connection; after batching, at most two command channels run concurrently. Per-node errors remain visible in the file table tooltip and diagnostic log. This still needs a live retry on the cluster.
 
 早期核对报告显示：部分节点的 SFTP 会话仍在线，但哈希命令遇到 `ChannelException(2, 'Connect failed')`。这是跳板连接拒绝新通道，不能据此判断文件缺失。现在核对会另建一条经过认证的直连节点 SSH 连接；批量改进后最多并行运行两个命令通道。逐节点错误仍可在文件表提示和诊断日志中查看。此修改仍需在集群上重试验证。
+
+A later 36-node copy failed on the nodes after the first in each eight-node jump-connection group, consistent with an SSH channel limit. Browsing now allocates at most four workers per jump connection; the owner confirmed this initial fix worked on the cluster. Copies now use a separate bounded pool of authenticated jump connections, opening worker and destination SFTP channels only while each task runs. At most four node copies run concurrently, and queued nodes occupy no transfer channels. Simulated tests cover channel bounds and connection reuse; this revised path still needs a live cluster check.
+
+随后一次面向 36 个节点的复制中，每组八个节点除首节点外均失败，符合 SSH 通道数受限的现象。浏览连接现每组最多分配四个工作节点；所有者已确认这一初步修复在集群上有效。复制现使用独立、有上限的已认证跳板连接池，仅在节点任务运行期间打开工作节点和目标 SFTP 通道。最多同时复制四个节点，排队节点不占传输通道。模拟测试覆盖通道上限和连接复用；本次改造仍需在集群实测。
 
 The experimental onedir build was produced with Python 3.12 and PyInstaller 6.22.3. Its directory contains `python312.dll`, Qt WebEngine resources, terminal assets, and the required Conda DLLs. A local startup smoke check kept `NodeBridge.exe` running and created `data/logs/errors.log` and `crash.log`; it did not exercise SSH, transfers, or WebEngine terminals. Seven focused diagnostics, settings, activity-log and file-operation tests passed locally. Clean-machine verification is still required.
 

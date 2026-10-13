@@ -104,6 +104,39 @@ class RemoteTerminalWidgetTests(unittest.TestCase):
         self._wait_until(lambda: False, 100)
         self.assertEqual(len(sent), count)
 
+    def test_paste_shortcuts_send_clipboard_exactly_once(self):
+        sent = []
+        self.widget.inputRequested.connect(sent.append)
+        previous_text = self.app.clipboard().text()
+        self.addCleanup(self.app.clipboard().setText, previous_text)
+        self.widget.focus_terminal()
+        self.assertTrue(self._wait_until(lambda: self.app.focusWidget() is self.widget.focusProxy()))
+        self.assertTrue(self._wait_until(lambda: self._evaluate(
+            "document.activeElement === nodebridgeTerminal.textarea")))
+        target = self.widget.focusProxy()
+        text = "中文 first\nsecond"
+        self.app.clipboard().setText(text)
+        expected = "中文 first\rsecond".encode("utf-8")
+        for modifiers in (Qt.KeyboardModifier.ControlModifier,
+                          Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier):
+            with self.subTest(modifiers=modifiers):
+                sent.clear()
+                QTest.keyClick(target, Qt.Key.Key_V, modifiers)
+                self.assertTrue(self._wait_until(lambda: bool(sent)))
+                # Allow both the native paste and asynchronous WebChannel reply
+                # to arrive; checking only the first input hid duplicate pastes.
+                self._wait_until(lambda: False, 250)
+                self.assertEqual(sent, [expected])
+
+        self.widget.write("\x1b[?2004h")
+        self.assertTrue(self._wait_until(lambda: self._evaluate(
+            "nodebridgeTerminal.modes.bracketedPasteMode")))
+        sent.clear()
+        QTest.keyClick(target, Qt.Key.Key_V, Qt.KeyboardModifier.ControlModifier)
+        self.assertTrue(self._wait_until(lambda: bool(sent)))
+        self._wait_until(lambda: False, 250)
+        self.assertEqual(sent, [b"\x1b[200~" + expected + b"\x1b[201~"])
+
 
 if __name__ == "__main__":
     unittest.main()

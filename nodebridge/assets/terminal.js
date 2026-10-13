@@ -45,6 +45,10 @@
       return false;
     }
     if (event.ctrlKey && event.code === 'KeyV') {
+      // Returning false stops xterm's key mapping, but not Chromium's native
+      // paste. Cancel that default before requesting our clipboard copy.
+      event.preventDefault();
+      event.stopPropagation();
       if (bridge) bridge.paste(text => { if (text) terminal.paste(text); });
       return false;
     }

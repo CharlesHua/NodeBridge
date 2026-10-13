@@ -12,6 +12,10 @@ The experimental portable edition is a folder, not a single executable. Build it
 .\.conda-env\python.exe scripts\build_portable.py
 ```
 
+The script writes PyInstaller output directly to UTF-8 `dist/build_portable_latest.log`. Open it with a UTF-8 editor for build diagnostics. Do not use PowerShell `*>` to create this log; PowerShell's native-command redirection can change the encoding or replace characters before writing them.
+
+脚本会直接将 PyInstaller 输出写入 UTF-8 编码的 `dist/build_portable_latest.log`，可用支持 UTF-8 的编辑器查看构建诊断。不要用 PowerShell 的 `*>` 生成这个日志；其原生命令重定向可能改变编码，或在写入前就把字符替换掉。
+
 Run that command again from the project root after changing source code. It creates a new numbered build folder and updates the ZIP; it does not update a previously extracted copy automatically. To update a copy you use, close NodeBridge, back up its `data` folder, replace `NodeBridge.exe` and `_internal` with the new build, and retain `data`. The local Conda environment is needed to build, but is not part of the archive.
 
 以后修改源代码后，在项目根目录再次运行上述命令即可重建。脚本会新建带编号的构建目录并更新 ZIP，不会自动更新已解压使用的旧程序。更新正在使用的版本时，先关闭 NodeBridge、备份其 `data`，再用新构建的 `NodeBridge.exe` 和 `_internal` 替换旧文件，同时保留 `data`。本地 Conda 环境用于构建，不包含在压缩包中。

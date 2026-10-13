@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import errno
 import logging
 import posixpath
 import re
@@ -69,7 +70,8 @@ from nodebridge.file_operations import (
     validate_remote_name,
 )
 from nodebridge.file_icons import FileIcons
-from nodebridge.remote import DirectoryListing, NodeConfig, NodeDiscovery, RemoteSession
+from nodebridge.command_dialog import CommandManagerDialog, load_commands
+from nodebridge.remote import DirectoryListing, NodeConfig, NodeDiscovery, RemoteSession, TransferSessionPool
 from nodebridge.site_dialog import SiteManagerDialog
 from nodebridge.sites import SiteStore
 from nodebridge.transfer import (
@@ -92,7 +94,7 @@ PATH_ROLE = Qt.ItemDataRole.UserRole
 DESTRUCTIVE_SHELL_COMMAND = re.compile(
     r"(?:^\s*|[;&|]\s*)(?:sudo\s+)?(?:rm|rmdir|mv|dd|mkfs(?:\.[\w-]+)?|"
     r"shutdown|reboot|poweroff|chmod|chown)\b",
-    re.IGNORECASE,
+    re.IGNORECASE | re.MULTILINE,
 )
 LOADED_ROLE = Qt.ItemDataRole.UserRole + 1
 
@@ -230,9 +232,13 @@ class MainWindow(QMainWindow):
         self._terminal_helper_reservations: set[int] = set()
         self._jump_password: str | None = None
         self._pending_worker_discovery = False
-        self._pending_worker_refresh: str | None = None
+        self._pending_worker_refresh: tuple[str, bool] | None = None
         self._pending_worker_probe = False
         self._probe_job: JobThread | None = None
+        self._worker_connect_job: JobThread | None = None
+        self._node_verified_revision: dict[str, int] = {}
+        self._node_status_revision = 0
+        self._hash_cache: dict[tuple, tuple[float, dict]] = {}
         self._probe_cancel = threading.Event()
         self._probe_generation = 0
         self._hash_job: JobThread | None = None
@@ -269,6 +275,12 @@ class MainWindow(QMainWindow):
             self._settings.value("view/show_local_site", True, type=bool)
         )
         self.show_local_action.toggled.connect(self._set_local_visible)
+        self.show_workers_action = self.view_menu.addAction("查看间接节点")
+        self.show_workers_action.setCheckable(True)
+        self.show_workers_action.setChecked(
+            self._settings.value("view/show_indirect_nodes", True, type=bool)
+        )
+        self.show_workers_action.toggled.connect(self._set_workers_visible)
         self.show_log_action = self.view_menu.addAction("查看日志")
         self.show_log_action.setCheckable(True)
         self.show_log_action.setChecked(
@@ -276,6 +288,8 @@ class MainWindow(QMainWindow):
         )
         self.show_log_action.toggled.connect(self._set_operation_log_visible)
         self.view_menu.addAction("打开日志文件", self._open_log_file)
+        self.tools_menu = self.menuBar().addMenu("工具")
+        self.tools_menu.addAction("常用命令管理", self._manage_commands)
         self.help_menu = QMenu("帮助", self.menuBar())
         self.menuBar().addMenu(self.help_menu)
         self.help_menu.addAction("使用指南", self._show_user_guide)
@@ -339,6 +353,7 @@ class MainWindow(QMainWindow):
         file_layout.setSpacing(5)
         self.workspace_tabs.addTab(self.file_view, "文件")
         self.terminal_workspace = TerminalWorkspace()
+        self.terminal_workspace.set_commands(load_commands(self._settings))
         self.terminal_workspace.connectRequested.connect(self._connect_terminal)
         self.terminal_workspace.disconnectRequested.connect(self._close_terminal)
         self.terminal_workspace.connectManyRequested.connect(self._connect_terminals)
@@ -445,6 +460,9 @@ class MainWindow(QMainWindow):
         self.worker_browser.connectRequested.connect(self._connect_selected_workers)
         self.worker_browser.disconnectRequested.connect(self._disconnect_selected_workers)
         self.worker_browser.browseRequested.connect(self._browse_workers)
+        self.worker_browser.nodeSwitchRequested.connect(
+            lambda path: self._browse_workers(path, parent_fallback=True)
+        )
         self.worker_browser.createDirectoryRequested.connect(self._create_worker_directory)
         self.worker_browser.table.localPathsDropped.connect(self._drop_local_on_workers)
         self.worker_browser.table.remotePathsDropped.connect(self._drop_jump_on_workers)
@@ -452,11 +470,15 @@ class MainWindow(QMainWindow):
         panes.setSizes([350, 510, 690])
         file_layout.addWidget(panes, 1)
         self.local.setVisible(self.show_local_action.isChecked())
+        self.worker_browser.setVisible(self.show_workers_action.isChecked())
 
         self.batch_results = QTableWidget(0, 4)
         self.batch_results.setHorizontalHeaderLabels(["节点", "操作", "结果", "详情"])
         self.batch_results.setShowGrid(False)
         self.batch_results.verticalHeader().hide()
+        self.batch_results.verticalHeader().setMinimumSectionSize(18)
+        self.batch_results.verticalHeader().setDefaultSectionSize(20)
+        self.batch_results.setWordWrap(False)
         self.batch_results.setFixedHeight(135)
         self.batch_results.setColumnWidth(0, 95)
         self.batch_results.setColumnWidth(1, 150)
@@ -499,6 +521,28 @@ class MainWindow(QMainWindow):
             nodes.update((f"worker:{alias}", alias) for alias in self.worker_browser.known_aliases())
         self._terminal_manager.retain_nodes(set(nodes))
         self.terminal_workspace.set_nodes(list(nodes.items()))
+        self.terminal_workspace.set_node_statuses({
+            f"worker:{alias}": status for alias, status in self.worker_browser._probe_status.items()
+        })
+
+    def _manage_commands(self):
+        dialog = CommandManagerDialog(load_commands(self._settings), self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            commands = dialog.commands()
+            self._settings.setValue("terminal/commands", json.dumps(commands, ensure_ascii=False))
+            self._settings.sync()
+            self.terminal_workspace.set_commands(commands)
+
+    def _set_node_probe_statuses(self, statuses, observed_revision=None):
+        statuses = {alias: status for alias, status in statuses.items()
+                    if observed_revision is None or self._node_verified_revision.get(alias, 0) <= observed_revision}
+        self.worker_browser.set_probe_statuses(statuses)
+        self.terminal_workspace.set_node_statuses({f"worker:{alias}": value for alias, value in statuses.items()})
+
+    def _node_connected(self, alias):
+        self._node_status_revision += 1
+        self._node_verified_revision[alias] = self._node_status_revision
+        self._set_node_probe_statuses({alias: ("reachable", "已实际连接成功")})
 
     def _connect_terminal(self, node_id: str) -> None:
         self._connect_terminals([node_id])
@@ -669,6 +713,8 @@ class MainWindow(QMainWindow):
                     notice = banners[node_id].replace("\r\n", "\n").replace("\n", "\r\n")
                     self.terminal_workspace.append_output(session_id, notice.rstrip("\r\n") + "\r\n")
                 self._terminal_manager.add(session_id, node_id, channel)
+                if node_id.startswith("worker:"):
+                    self._node_connected(node_id.removeprefix("worker:"))
                 if assigned[node_id] is not None:
                     self._terminal_hosts[session_id] = assigned[node_id]
                 size = self.terminal_workspace.terminal_size(session_id)
@@ -947,7 +993,8 @@ class MainWindow(QMainWindow):
         self.terminal_workspace.begin_broadcast_round(state.group_id, state.command, state.targets)
         for node_id, session_id in state.targets.items():
             try:
-                self._terminal_manager.send(session_id, (state.command + "\r").encode("utf-8"))
+                command = state.command.replace("\r\n", "\n").replace("\r", "\n")
+                self._terminal_manager.send(session_id, (command.replace("\n", "\r") + "\r").encode("utf-8"))
                 sent += 1
                 sent_nodes.append(self.terminal_workspace.node_label(node_id))
             except ConnectionError as exc:
@@ -1105,6 +1152,11 @@ class MainWindow(QMainWindow):
         self._settings.setValue("view/show_local_site", visible)
         self._settings.sync()
 
+    def _set_workers_visible(self, visible: bool) -> None:
+        self.worker_browser.setVisible(visible)
+        self._settings.setValue("view/show_indirect_nodes", visible)
+        self._settings.sync()
+
     def _save_local_path(self, path: str) -> None:
         self._settings.setValue("files/local_path", path)
         self._settings.sync()
@@ -1154,6 +1206,7 @@ class MainWindow(QMainWindow):
     def _update_controls(self) -> None:
         busy = self._job is not None
         copying = self._copy_job is not None
+        connecting_workers = self._worker_connect_job is not None
         connected = self._session is not None
         self.connect_button.setEnabled(not busy and not copying and not connected)
         self.jump_button.setEnabled(not busy and not copying and connected)
@@ -1172,6 +1225,11 @@ class MainWindow(QMainWindow):
             self.worker_browser.disconnect_button.setEnabled(False)
             self.worker_browser.add_button.setEnabled(False)
         self.terminal_workspace.set_busy(busy)
+        if connecting_workers:
+            for widget in (self.jump_button, self.disconnect_button, self.site_button,
+                           self.worker_browser.connect_button, self.worker_browser.disconnect_button,
+                           self.worker_browser.add_button):
+                widget.setEnabled(False)
 
     def _open_site_manager(self) -> None:
         try:
@@ -1288,7 +1346,8 @@ class MainWindow(QMainWindow):
         cancel = threading.Event()
         self._probe_cancel = cancel
         config, password = jump.config, self._jump_password
-        self.worker_browser.set_probe_statuses({
+        observed_revision = self._node_status_revision
+        self._set_node_probe_statuses({
             alias: ("checking", "正在通过直连节点测试 SSH 连接") for alias in aliases
         })
 
@@ -1313,7 +1372,7 @@ class MainWindow(QMainWindow):
         def success(statuses):
             if generation != self._probe_generation or self._session is not jump or self._parents:
                 return
-            self.worker_browser.set_probe_statuses(statuses)
+            self._set_node_probe_statuses(statuses, observed_revision)
             reachable = sum(state == "reachable" for state, _ in statuses.values())
             self.status.setText(
                 f"SSH 检测完成：{reachable}/{len(statuses)} 个候选节点可连接。"
@@ -1326,9 +1385,9 @@ class MainWindow(QMainWindow):
         def failed(message):
             if generation != self._probe_generation or cancel.is_set():
                 return
-            self.worker_browser.set_probe_statuses({
+            self._set_node_probe_statuses({
                 alias: ("error", message) for alias in aliases
-            })
+            }, observed_revision)
             self.status.setText(f"SSH 后台探测失败：{message}")
             logging.getLogger("nodebridge.probe").warning(
                 "SSH 节点后台探测失败：%s", self._redact_log_value(message),
@@ -1371,7 +1430,7 @@ class MainWindow(QMainWindow):
 
     def _connect_selected_workers(self) -> None:
         jump = self._session
-        if jump is None or self._parents or self._job is not None or self._copy_job is not None:
+        if jump is None or self._parents or self._job is not None or self._copy_job is not None or self._worker_connect_job is not None:
             return
         aliases = [alias for alias in self.worker_browser.target_aliases() if alias not in self._workers]
         self.worker_browser._check_all(False)
@@ -1380,6 +1439,7 @@ class MainWindow(QMainWindow):
             return
         self._cancel_auto_hash()
         path = self.worker_browser.path_edit.text().strip()
+        connection_revision = self._node_status_revision
 
         def connect_one(alias: str, host: RemoteSession):
             worker = RemoteSession.connect_alias(alias, host)
@@ -1403,7 +1463,9 @@ class MainWindow(QMainWindow):
                 counts[id(host)] += 1
             assigned = {}
             for alias in aliases:
-                host = next((root for root in roots if counts[id(root)] < 8), None)
+                # A browser session stays open per worker. Reserve room on each
+                # jump transport for separate transfer channels and other work.
+                host = next((root for root in roots if counts[id(root)] < 4), None)
                 if host is None:
                     try:
                         host = RemoteSession.connect(jump.config, self._jump_password)
@@ -1445,8 +1507,9 @@ class MainWindow(QMainWindow):
                 self._workers[alias] = worker
                 self._worker_jumps[alias] = assigned[alias]
                 self.worker_browser.set_connection(alias, listing)
+                self._node_connected(alias)
             for alias, message in errors.items():
-                self.worker_browser.set_probe_status(alias, "error", message)
+                self._set_node_probe_statuses({alias: ("error", message)}, connection_revision)
             self._sync_terminal_nodes()
             self._schedule_auto_hash()
             self.status.setText(f"间接节点：新连接 {len(results)} 个，失败 {len(errors)} 个。")
@@ -1457,6 +1520,7 @@ class MainWindow(QMainWindow):
         self._run(
             work, success, f"正在经 {jump.config.host} 连接 {len(aliases)} 个间接节点…",
             log_action=f"SFTP 并行连接（{compact_node_aliases(aliases)}）",
+            background_slot="_worker_connect_job",
             log_category="connection", log_context={"nodes": aliases, "via": jump.config.host},
             log_result=lambda value: (
                 "成功" if not value[1] else "部分完成" if value[0] else "失败",
@@ -1468,7 +1532,7 @@ class MainWindow(QMainWindow):
         )
 
     def _disconnect_selected_workers(self) -> None:
-        if self._job is not None or self._copy_job is not None:
+        if self._job is not None or self._copy_job is not None or self._worker_connect_job is not None:
             return
         aliases = [alias for alias in self.worker_browser.target_aliases() if alias in self._workers]
         self.worker_browser._check_all(False)
@@ -1508,12 +1572,12 @@ class MainWindow(QMainWindow):
             log_context_result=lambda errors: {"errors": errors},
         )
 
-    def _browse_workers(self, path: str) -> None:
+    def _browse_workers(self, path: str, parent_fallback: bool = False) -> None:
         if path.startswith("/"):
             self._cancel_auto_hash()
         if self._job is not None:
             if path.startswith("/"):
-                self._pending_worker_refresh = path
+                self._pending_worker_refresh = (path, parent_fallback)
             return
         if not path.startswith("/"):
             self.status.setText("间接节点路径必须是绝对路径。")
@@ -1527,12 +1591,25 @@ class MainWindow(QMainWindow):
             self.status.setText("请先连接间接节点。")
             return
         sessions = {name: self._workers[name] for name in names}
+        requested_view = (self.worker_browser.mode.currentIndex(), self.worker_browser.focused_alias)
+        parent_fallback = parent_fallback and requested_view[0] == 1
+
+        def read_directory(session):
+            candidate = path
+            while True:
+                try:
+                    return session.list_directory(candidate)
+                except OSError as exc:
+                    missing = isinstance(exc, FileNotFoundError) or exc.errno == errno.ENOENT
+                    if not parent_fallback or not missing or candidate == "/":
+                        raise
+                    candidate = posixpath.dirname(candidate.rstrip("/")) or "/"
 
         def work():
             results = {}
             errors = {}
             with ThreadPoolExecutor(max_workers=min(4, len(sessions))) as pool:
-                futures = {pool.submit(session.list_directory, path): alias for alias, session in sessions.items()}
+                futures = {pool.submit(read_directory, session): alias for alias, session in sessions.items()}
                 for future in as_completed(futures):
                     alias = futures[future]
                     try:
@@ -1543,7 +1620,10 @@ class MainWindow(QMainWindow):
 
         def success(result):
             results, errors = result
-            self.worker_browser.path_edit.setText(path)
+            current_view = (self.worker_browser.mode.currentIndex(), self.worker_browser.focused_alias)
+            if current_view == requested_view and self._pending_worker_refresh is None:
+                shown_path = results[names[0]].path if requested_view[0] == 1 and results else path
+                self.worker_browser.path_edit.setText(shown_path)
             self.worker_browser.set_listings(results, list(errors))
             self._schedule_auto_hash()
             self.status.setText(f"间接节点目录：已读取 {len(results)} 个，失败 {len(errors)} 个。")
@@ -1565,11 +1645,37 @@ class MainWindow(QMainWindow):
         path, aliases, names = self.worker_browser.auto_hash_candidates()
         if not names:
             return
+        snapshots = self.worker_browser.hash_listing_snapshots(path, aliases, names)
+        cached_results = []
+        remaining = []
+        now = time.monotonic()
+        for name in names:
+            key = self._hash_cache_key(path, aliases, name, snapshots)
+            cached = self._hash_cache.get(key) if key is not None else None
+            if cached is not None and now - cached[0] < 60:
+                cached_results.append({**cached[1], "cached": True})
+            else:
+                remaining.append(name)
+        if cached_results:
+            self.worker_browser.set_hash_results(path, cached_results)
+        names = remaining
+        if not names:
+            return
         generation = self._hash_generation
         self._hash_pending = (path, aliases, names, generation)
         self.worker_browser.set_hash_pending(path, names)
         if self._hash_job is None:
             self._start_auto_hash()
+
+    def _hash_cache_key(self, path, aliases, name, snapshots):
+        entries = []
+        for alias in sorted(aliases):
+            entry = snapshots.get(alias, {}).get(name)
+            if entry is None or entry.modified is None or entry.size is None:
+                return None
+            entries.append((alias, self._workers.get(alias), entry.size, entry.modified,
+                            entry.is_dir, entry.is_symlink))
+        return self._session, path, name, tuple(entries)
 
     def _start_auto_hash(self) -> None:
         request = self._hash_pending
@@ -1603,6 +1709,15 @@ class MainWindow(QMainWindow):
                     or self.worker_browser.mode.currentIndex() != 0):
                 return
             self.worker_browser.set_hash_results(path, results)
+            now = time.monotonic()
+            self._hash_cache = {key: value for key, value in self._hash_cache.items()
+                                if now - value[0] < 60}
+            for result in results:
+                key = self._hash_cache_key(path, aliases, result["name"], snapshots)
+                if key is not None and result["result"] in {"same", "different"}:
+                    self._hash_cache[key] = (now, result)
+            while len(self._hash_cache) > 2048:
+                self._hash_cache.pop(next(iter(self._hash_cache)))
             differences = sum(result["result"] != "same" for result in results)
             self.status.setText(
                 f"后台 SHA-256 校验完成：{len(results)} 个文件，{differences} 项差异或错误。"
@@ -1696,11 +1811,18 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _inspect_collection_roots(
         paths: list[str], sessions: dict[str, RemoteSession],
+        transfer_pool: TransferSessionPool | None = None,
     ) -> tuple[dict[str, list[str]], dict[str, BatchResult]]:
         mapped: dict[str, list[str]] = {}
         failures: dict[str, BatchResult] = {}
 
         def inspect_one(alias: str, session: RemoteSession) -> list[str]:
+            if transfer_pool is not None:
+                with transfer_pool.worker(alias) as peer:
+                    return inspect_paths(alias, peer)
+            return inspect_paths(alias, session)
+
+        def inspect_paths(alias: str, session: RemoteSession) -> list[str]:
             return [node_suffixed_name(
                 posixpath.basename(path), alias,
                 stat.S_ISDIR(session.sftp.lstat(path).st_mode or 0),
@@ -1751,56 +1873,42 @@ class MainWindow(QMainWindow):
         self.batch_results.setRowCount(0)
 
         def work():
-            peers = {}
-            connection_failures = {}
-            try:
-                for alias, session in sessions.items():
+            # Only active tasks hold transfer channels. The authenticated jump
+            # connections are reused across preflight, copy, and refresh.
+            with TransferSessionPool(jump.config, self._jump_password) as transfer_pool:
+                mapped, failures = self._inspect_collection_roots(
+                    paths, sessions, transfer_pool,
+                )
+                for result in failures.values():
+                    self.batchResultReady.emit(result)
+                good = {alias: session for alias, session in sessions.items() if alias in mapped}
+
+                def copy_one(alias: str, _browse_session: RemoteSession) -> BatchResult:
+                    progress = lambda path: self.transferProgress.emit(f"{alias}：正在汇集 {path}")
+                    with transfer_pool.worker(alias) as source:
+                        if not to_jump:
+                            result = copy_remote_to_local(
+                                source, paths, destination, progress, self._resolve_conflict,
+                                root_suffix=alias,
+                            )
+                        else:
+                            with transfer_pool.jump() as target:
+                                result = copy_remote_between_sessions(
+                                    source, target, paths, destination, progress,
+                                    self._resolve_conflict, root_suffix=alias,
+                                )
+                    return BatchResult(alias, copied=result)
+
+                copied = run_parallel(good, copy_one, self.batchResultReady.emit) if good else []
+                results = {result.alias: result for result in [*failures.values(), *copied]}
+                listing = None
+                if to_jump:
                     try:
-                        peers[alias] = session.open_sftp_peer()
-                    except Exception as exc:
-                        connection_failures[alias] = BatchResult(
-                            alias, error=f"{type(exc).__name__}: {exc}",
-                        )
-                return collect_with_peers(peers, connection_failures)
-            finally:
-                for peer in peers.values():
-                    peer.close()
-
-        def collect_with_peers(peers, connection_failures):
-            mapped, failures = self._inspect_collection_roots(paths, peers) if peers else ({}, {})
-            failures.update(connection_failures)
-
-            def copy_one(alias: str, session: RemoteSession) -> BatchResult:
-                progress = lambda path: self.transferProgress.emit(f"{alias}：正在汇集 {path}")
-                if not to_jump:
-                    result = copy_remote_to_local(
-                        session, paths, destination, progress, self._resolve_conflict,
-                        root_suffix=alias,
-                    )
-                else:
-                    # Every worker gets a separate jump SFTP connection for writes.
-                    target = jump.open_sftp_peer()
-                    try:
-                        result = copy_remote_between_sessions(
-                            session, target, paths, destination, progress,
-                            self._resolve_conflict, root_suffix=alias,
-                        )
-                    finally:
-                        target.close()
-                return BatchResult(alias, copied=result)
-
-            for result in failures.values():
-                self.batchResultReady.emit(result)
-            good = {alias: session for alias, session in peers.items() if alias in mapped}
-            copied = run_parallel(good, copy_one, self.batchResultReady.emit) if good else []
-            results = {result.alias: result for result in [*failures.values(), *copied]}
-            listing = None
-            if to_jump:
-                try:
-                    listing = jump.list_directory(browsed_jump_path)
-                except Exception:
-                    pass
-            return [results[alias] for alias in aliases], listing
+                        with transfer_pool.jump() as target:
+                            listing = target.list_directory(browsed_jump_path)
+                    except Exception:
+                        pass
+                return [results[alias] for alias in aliases], listing
 
         def success(value):
             results, listing = value
@@ -2051,7 +2159,9 @@ class MainWindow(QMainWindow):
         self.batch_results.setRowCount(0)
         self._batch_mode_label = next(label for label, key in BatchDialog.MODES if key == mode)
 
-        def work_one(alias: str, session: RemoteSession) -> BatchResult:
+        def work_one(
+            alias: str, session: RemoteSession, transfer_pool: TransferSessionPool | None = None,
+        ) -> BatchResult:
             progress = lambda path: self.transferProgress.emit(f"{alias}：正在处理 {path}")
             if mode == "delete_workers":
                 paths = [posixpath.join(worker_path, name) for name in sources]
@@ -2071,30 +2181,50 @@ class MainWindow(QMainWindow):
             elif mode == "worker_to_local":
                 result = copy_remote_to_local(session, worker_sources, destination, progress, self._resolve_conflict)
             elif mode == "worker_to_worker":
-                target_session = self._workers[target_alias].open_sftp_peer()
-                try:
-                    result = copy_remote_between_sessions(
-                        session, target_session, worker_sources, destination,
-                        progress, self._resolve_conflict,
-                    )
-                finally:
-                    target_session.close()
+                if transfer_pool is not None:
+                    with transfer_pool.worker(target_alias) as target_session:
+                        result = copy_remote_between_sessions(
+                            session, target_session, worker_sources, destination,
+                            progress, self._resolve_conflict,
+                        )
+                else:
+                    target_session = self._workers[target_alias].open_sftp_peer()
+                    try:
+                        result = copy_remote_between_sessions(
+                            session, target_session, worker_sources, destination,
+                            progress, self._resolve_conflict,
+                        )
+                    finally:
+                        target_session.close()
             else:
-                # Give each worker an independent jump SFTP session so source
-                # and destination streams can run concurrently without sharing
-                # a Paramiko SFTP client across threads.
-                extra_jump = RemoteSession.connect(jump.config, self._jump_password)
-                try:
-                    if mode == "jump_to_workers":
-                        result = copy_remote_between_sessions(
-                            extra_jump, session, sources, destination, progress, self._resolve_conflict
-                        )
-                    else:
-                        result = copy_remote_between_sessions(
-                            session, extra_jump, worker_sources, destination, progress, self._resolve_conflict
-                        )
-                finally:
-                    extra_jump.close()
+                # Keep source and destination SFTP streams separate while copying.
+                if transfer_pool is not None:
+                    with transfer_pool.jump() as extra_jump:
+                        if mode == "jump_to_workers":
+                            result = copy_remote_between_sessions(
+                                extra_jump, session, sources, destination,
+                                progress, self._resolve_conflict,
+                            )
+                        else:
+                            result = copy_remote_between_sessions(
+                                session, extra_jump, worker_sources, destination,
+                                progress, self._resolve_conflict,
+                            )
+                else:
+                    extra_jump = RemoteSession.connect(jump.config, self._jump_password)
+                    try:
+                        if mode == "jump_to_workers":
+                            result = copy_remote_between_sessions(
+                                extra_jump, session, sources, destination,
+                                progress, self._resolve_conflict,
+                            )
+                        else:
+                            result = copy_remote_between_sessions(
+                                session, extra_jump, worker_sources, destination,
+                                progress, self._resolve_conflict,
+                            )
+                    finally:
+                        extra_jump.close()
             deleted = 0
             if moving and not result.cancelled and result.skipped == 0:
                 try:
@@ -2108,36 +2238,41 @@ class MainWindow(QMainWindow):
 
         browsed_jump_path = self._path
         def work():
-            peers = {}
-            try:
-                connection_failures = {}
-                if not moving and mode != "delete_workers":
-                    for alias, session in nodes.items():
-                        try:
-                            peers[alias] = session.open_sftp_peer()
-                        except Exception as exc:
-                            result = BatchResult(alias, error=f"{type(exc).__name__}: {exc}")
-                            connection_failures[alias] = result
-                            self.batchResultReady.emit(result)
-                active_nodes = peers if not moving and mode != "delete_workers" else nodes
-                completed = (run_parallel(active_nodes, work_one, self.batchResultReady.emit, max_workers)
-                             if active_nodes else [])
-                by_alias = {result.alias: result for result in [*completed, *connection_failures.values()]}
-                results = [by_alias[alias] for alias in nodes]
-                return build_batch_result(results, active_nodes)
-            finally:
-                for peer in peers.values():
-                    peer.close()
+            if moving or mode == "delete_workers":
+                results = run_parallel(nodes, work_one, self.batchResultReady.emit, max_workers)
+                return build_batch_result(results, nodes)
+            with TransferSessionPool(jump.config, self._jump_password) as transfer_pool:
+                refreshed = {}
 
-        def build_batch_result(results, active_nodes):
+                def copy_one(alias: str, _browse_session: RemoteSession) -> BatchResult:
+                    channel = (transfer_pool.jump() if alias == "直连节点"
+                               else transfer_pool.worker(alias))
+                    with channel as peer:
+                        try:
+                            return work_one(alias, peer, transfer_pool)
+                        finally:
+                            if uses_workers and worker_path.startswith("/"):
+                                try:
+                                    refreshed[alias] = peer.list_directory(worker_path)
+                                except Exception:
+                                    pass
+
+                results = run_parallel(nodes, copy_one, self.batchResultReady.emit, max_workers)
+                return build_batch_result(results, nodes, refreshed, transfer_pool)
+
+        def build_batch_result(results, active_nodes, refreshed=None, transfer_pool=None):
             jump_listing = None
-            worker_listings = {}
+            worker_listings = dict(refreshed or {})
             if mode in {"jump_to_workers", "worker_to_jump", "jump_to_local", "local_to_jump"}:
                 try:
-                    jump_listing = jump.list_directory(browsed_jump_path)
+                    if transfer_pool is None:
+                        jump_listing = jump.list_directory(browsed_jump_path)
+                    else:
+                        with transfer_pool.jump() as jump_peer:
+                            jump_listing = jump_peer.list_directory(browsed_jump_path)
                 except Exception:
                     pass
-            if uses_workers and worker_path.startswith("/"):
+            if transfer_pool is None and uses_workers and worker_path.startswith("/"):
                 for alias, session in active_nodes.items():
                     try:
                         worker_listings[alias] = session.list_directory(worker_path)
@@ -2145,7 +2280,11 @@ class MainWindow(QMainWindow):
                         pass
             if mode == "worker_to_worker" and target_alias not in worker_listings:
                 try:
-                    worker_listings[target_alias] = self._workers[target_alias].list_directory(worker_path)
+                    if transfer_pool is None:
+                        worker_listings[target_alias] = self._workers[target_alias].list_directory(worker_path)
+                    else:
+                        with transfer_pool.worker(target_alias) as target_peer:
+                            worker_listings[target_alias] = target_peer.list_directory(worker_path)
                 except Exception:
                     pass
             return results, jump_listing, worker_listings
@@ -2334,13 +2473,17 @@ class MainWindow(QMainWindow):
         log_category: str = "file", log_context: dict | None = None,
         log_context_result: Callable[[object], dict] | None = None,
         background_copy: bool = False,
+        background_slot: str | None = None,
     ) -> None:
-        if background_copy:
-            self._run_background_copy(
+        if log_action and log_category == "file":
+            self._hash_cache.clear()
+        if background_copy or background_slot:
+            self._run_background_task(
                 work, on_success, description, log_action=log_action,
                 log_result=log_result, log_category=log_category,
                 log_context=log_context, log_context_result=log_context_result,
                 on_finished=on_finished,
+                job_attribute=background_slot or "_copy_job",
             )
             return
         if self._job is not None:
@@ -2369,15 +2512,16 @@ class MainWindow(QMainWindow):
         self._update_controls()
         job.start()
 
-    def _run_background_copy(
+    def _run_background_task(
         self, work: Callable[[], object], on_success: Callable[[object], None],
         description: str, *, log_action: str | None,
         log_result: Callable[[object], tuple[str, str]] | None,
         log_category: str, log_context: dict | None,
         log_context_result: Callable[[object], dict] | None,
         on_finished: Callable[[], None] | None,
+        job_attribute: str = "_copy_job",
     ) -> None:
-        if self._job is not None or self._copy_job is not None:
+        if self._job is not None or getattr(self, job_attribute) is not None:
             return
         self.status.setText(description)
         event_id = uuid.uuid4().hex
@@ -2387,7 +2531,7 @@ class MainWindow(QMainWindow):
             self._write_activity(event_id=event_id, category=log_category,
                                  action=log_action, state="进行中", context=log_context)
         job = JobThread(work, self)
-        self._copy_job = job
+        setattr(self, job_attribute, job)
 
         def finish_log(state: str, detail: str = "", extra: dict | None = None) -> None:
             if log_action is None:
@@ -2408,6 +2552,8 @@ class MainWindow(QMainWindow):
             )
 
         def succeeded(result: object) -> None:
+            if log_category == "file":
+                self._hash_cache.clear()
             on_success(result)
             state, detail = log_result(result) if log_result else ("成功", "")
             finish_log(state, detail, log_context_result(result) if log_context_result else None)
@@ -2420,14 +2566,14 @@ class MainWindow(QMainWindow):
 
         def failed(message: str) -> None:
             logging.getLogger("nodebridge.jobs").error(
-                "后台复制失败：%s", self._redact_log_value(message),
+                "后台任务失败：%s", self._redact_log_value(message),
             )
             finish_log("失败", message)
             self._show_error(message)
 
         def finished() -> None:
-            if self._copy_job is job:
-                self._copy_job = None
+            if getattr(self, job_attribute) is job:
+                setattr(self, job_attribute, None)
             self._update_controls()
             self._finish_background_close()
 
@@ -2442,6 +2588,8 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _job_succeeded(self, result: object) -> None:
+        if self._active_log_category == "file" and self._active_log_action:
+            self._hash_cache.clear()
         if self._on_job_success is not None:
             self._on_job_success(result)
         if self._active_log_index is not None:
@@ -2483,9 +2631,9 @@ class MainWindow(QMainWindow):
             self._pending_worker_probe = False
             QTimer.singleShot(0, self._probe_worker_aliases)
         elif self._pending_worker_refresh:
-            path = self._pending_worker_refresh
+            path, parent_fallback = self._pending_worker_refresh
             self._pending_worker_refresh = None
-            QTimer.singleShot(0, lambda: self._browse_workers(path))
+            QTimer.singleShot(0, lambda: self._browse_workers(path, parent_fallback))
 
     def _show_error(self, message: str) -> None:
         self.status.setText("操作失败")
@@ -2630,6 +2778,9 @@ class MainWindow(QMainWindow):
         )
 
     def _disconnect(self) -> None:
+        if self._worker_connect_job is not None:
+            self.status.setText("请等待间接节点连接结束后再断开直连节点。")
+            return
         if self._copy_job is not None:
             self.status.setText("请等待后台复制完成后再断开连接。")
             return
@@ -3292,6 +3443,10 @@ class MainWindow(QMainWindow):
         return exported
 
     def closeEvent(self, event) -> None:
+        if self._worker_connect_job is not None:
+            event.ignore()
+            self.status.setText("请等待间接节点连接结束后再关闭。")
+            return
         if self._copy_job is not None:
             event.ignore()
             self.status.setText("请等待后台复制完成后再关闭。")
@@ -3321,6 +3476,7 @@ class MainWindow(QMainWindow):
 
     def _finish_background_close(self) -> None:
         if (self._close_when_background_idle and self._job is None
+                and self._worker_connect_job is None
                 and self._copy_job is None and self._hash_job is None and self._probe_job is None
                 and self._session is None):
             QTimer.singleShot(0, self.close)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import zipfile
@@ -19,12 +20,22 @@ def main() -> None:
         raise SystemExit("Build the Windows edition on Windows.")
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid4().hex[:6]
     bundle = ROOT / "dist" / "portable-builds" / run_id / "NodeBridge"
-    subprocess.run(
-        [sys.executable, "-m", "PyInstaller", "--clean", "--noconfirm",
-         "--distpath", str(bundle.parent), str(ROOT / "nodebridge.spec")],
-        cwd=ROOT,
-        check=True,
-    )
+    work_dir = ROOT / "build" / "portable-builds" / run_id
+    log_path = ROOT / "dist" / "build_portable_latest.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env.update(PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
+    print(f"Building {run_id}; UTF-8 build log: {log_path}", flush=True)
+    with log_path.open("wb") as log:
+        log.write(f"NodeBridge portable build {run_id}\n".encode("utf-8"))
+        log.flush()
+        subprocess.run(
+            [sys.executable, "-m", "PyInstaller", "--clean", "--noconfirm",
+             "--workpath", str(work_dir),
+             "--distpath", str(bundle.parent), str(ROOT / "nodebridge.spec")],
+            cwd=ROOT, check=True, env=env,
+            stdout=log, stderr=subprocess.STDOUT,
+        )
     if not (bundle / "NodeBridge.exe").is_file():
         raise SystemExit("The portable executable was not built.")
     copy2(ROOT / "LICENSE", bundle / "LICENSE")
@@ -39,6 +50,8 @@ def main() -> None:
                 continue
             output.write(path, Path("NodeBridge") / relative)
     pending.replace(archive)
+    with log_path.open("ab") as log:
+        log.write(f"Portable folder: {bundle}\nPortable archive: {archive}\n".encode("utf-8"))
     print(f"Portable folder: {bundle}")
     print(f"Portable archive: {archive}")
 

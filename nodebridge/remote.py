@@ -12,6 +12,7 @@ import stat
 import threading
 import time
 from concurrent.futures import CancelledError
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import paramiko
@@ -555,3 +556,77 @@ class RemoteSession:
         except Exception:
             channel.close()
             raise
+
+
+class TransferSessionPool:
+    """Reuse dedicated jump SSH connections while transfer tasks hold channels."""
+
+    def __init__(self, config: NodeConfig, password: str | None = None):
+        self._config = config
+        self._password = password
+        self._hosts: list[RemoteSession] = []
+        self._available: list[RemoteSession] = []
+        self._local = threading.local()
+        self._lock = threading.Lock()
+
+    def _acquire(self) -> RemoteSession:
+        depth = getattr(self._local, "depth", 0)
+        if depth:
+            self._local.depth = depth + 1
+            return self._local.host
+        with self._lock:
+            host = self._available.pop() if self._available else None
+        if host is None:
+            host = RemoteSession.connect_shell_host(self._config, self._password)
+            with self._lock:
+                self._hosts.append(host)
+        self._local.host = host
+        self._local.depth = 1
+        return host
+
+    def _release(self) -> None:
+        depth = self._local.depth - 1
+        self._local.depth = depth
+        if depth == 0:
+            host = self._local.host
+            del self._local.host
+            with self._lock:
+                self._available.append(host)
+
+    @contextmanager
+    def worker(self, alias: str):
+        host = self._acquire()
+        try:
+            peer = RemoteSession.connect_alias(alias, host)
+            try:
+                yield peer
+            finally:
+                peer.close()
+        finally:
+            self._release()
+
+    @contextmanager
+    def jump(self):
+        host = self._acquire()
+        try:
+            peer = host.open_sftp_peer()
+            try:
+                yield peer
+            finally:
+                peer.close()
+        finally:
+            self._release()
+
+    def close(self) -> None:
+        with self._lock:
+            hosts = list(self._hosts)
+            self._hosts.clear()
+            self._available.clear()
+        for host in hosts:
+            host.close()
+
+    def __enter__(self) -> "TransferSessionPool":
+        return self
+
+    def __exit__(self, _type, _value, _traceback) -> None:
+        self.close()

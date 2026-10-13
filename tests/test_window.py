@@ -5,6 +5,8 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -39,6 +41,45 @@ class WindowTests(unittest.TestCase):
         self.log_path = Path(self.settings_dir.name) / "nodebridge.log"
         settings = QSettings(self.settings_path, QSettings.Format.IniFormat)
         self.window = MainWindow(settings, log_path=self.log_path)
+        self.transfer_failures = {}
+        self.transfer_opened = []
+        self.transfer_active = 0
+        self.transfer_peak = 0
+        owner = self
+
+        class FakeTransferPool:
+            def __init__(self, _config, _password=None):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            @contextmanager
+            def worker(self, alias):
+                owner.transfer_opened.append(alias)
+                if alias in owner.transfer_failures:
+                    raise owner.transfer_failures[alias]
+                owner.transfer_active += 1
+                owner.transfer_peak = max(owner.transfer_peak, owner.transfer_active)
+                try:
+                    yield owner.window._workers[alias]
+                finally:
+                    owner.transfer_active -= 1
+
+            @contextmanager
+            def jump(self):
+                peer = owner.window._session.open_sftp_peer()
+                try:
+                    yield peer
+                finally:
+                    peer.close()
+
+        pool_patch = patch("nodebridge.window.TransferSessionPool", FakeTransferPool)
+        pool_patch.start()
+        self.addCleanup(pool_patch.stop)
 
     def tearDown(self):
         self.window._session = None
@@ -46,11 +87,13 @@ class WindowTests(unittest.TestCase):
 
     def _finish_job(self):
         deadline = time.monotonic() + 5
-        while (self.window._job is not None or self.window._copy_job is not None) and time.monotonic() < deadline:
+        while (self.window._job is not None or self.window._copy_job is not None
+               or self.window._worker_connect_job is not None) and time.monotonic() < deadline:
             self.app.processEvents()
             time.sleep(0.01)
         self.assertIsNone(self.window._job)
         self.assertIsNone(self.window._copy_job)
+        self.assertIsNone(self.window._worker_connect_job)
 
     def _finish_background(self, name):
         deadline = time.monotonic() + 5
@@ -441,9 +484,31 @@ class WindowTests(unittest.TestCase):
             for column in range(3)
         ], expected[:3])
 
+    def test_local_file_sizes_match_remote_byte_format(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            file_path = Path(temporary) / "sample.bin"
+            file_path.write_bytes(b"x" * 12345)
+            directory = Path(temporary) / "folder"
+            directory.mkdir()
+            self.assertTrue(self.window.local.navigate(temporary))
+            model = self.window.local.file_model
+            deadline = time.monotonic() + 3
+            while not model.index(str(file_path)).isValid() and time.monotonic() < deadline:
+                self.app.processEvents()
+                QTest.qWait(10)
+            self.assertEqual(model.data(model.index(str(file_path)).siblingAtColumn(1)), "12,345")
+            self.assertEqual(model.data(model.index(str(directory)).siblingAtColumn(1)), "")
+            self.assertEqual(model.data(model.index(str(file_path)).siblingAtColumn(2)), "BIN 文件")
+            self.assertEqual(model.data(model.index(str(directory)).siblingAtColumn(2)), "文件夹")
+            modified = datetime.fromtimestamp(file_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+            self.assertEqual(model.data(model.index(str(file_path)).siblingAtColumn(3)), modified)
+            self.assertEqual(model.headerData(0, Qt.Orientation.Horizontal,
+                                              Qt.ItemDataRole.TextAlignmentRole), Qt.AlignmentFlag.AlignCenter)
+            self.assertIn("font-weight: normal", self.window.local.table.horizontalHeader().styleSheet())
+
     def test_view_menu_remembers_local_site_visibility(self):
         self.assertEqual([action.text() for action in self.window.menuBar().actions()], [
-            "文件", "查看", "帮助",
+            "文件", "查看", "工具", "帮助",
         ])
         self.window.show_local_action.setChecked(False)
         self.assertTrue(self.window.local.isHidden())
@@ -451,6 +516,22 @@ class WindowTests(unittest.TestCase):
         reopened = MainWindow(QSettings(self.settings_path, QSettings.Format.IniFormat), log_path=self.log_path)
         self.assertFalse(reopened.show_local_action.isChecked())
         self.assertTrue(reopened.local.isHidden())
+        reopened.close()
+
+    def test_view_menu_remembers_indirect_nodes_visibility(self):
+        actions = [action.text() for action in self.window.view_menu.actions()]
+        self.assertEqual(actions[actions.index("查看本地站点") + 1], "查看间接节点")
+        self.assertTrue(self.window.show_workers_action.isChecked())
+        self.assertFalse(self.window.worker_browser.isHidden())
+
+        self.window.show_workers_action.setChecked(False)
+        self.assertTrue(self.window.worker_browser.isHidden())
+        self.window._settings.sync()
+        reopened = MainWindow(QSettings(self.settings_path, QSettings.Format.IniFormat), log_path=self.log_path)
+        self.assertFalse(reopened.show_workers_action.isChecked())
+        self.assertTrue(reopened.worker_browser.isHidden())
+        reopened.show_workers_action.setChecked(True)
+        self.assertFalse(reopened.worker_browser.isHidden())
         reopened.close()
 
     def test_help_menu_opens_bundled_chinese_user_guide(self):
@@ -911,6 +992,33 @@ class WindowTests(unittest.TestCase):
         browser.mode.setCurrentIndex(1)
         self.assertEqual(browser.table.item(0, 3).text(), "node02")
 
+    def test_hash_cache_reuses_fresh_metadata_and_expires(self):
+        browser = self.window.worker_browser
+        browser.path_edit.setText("/shared")
+        listing = DirectoryListing("/shared", (RemoteEntry("x", "/shared/x", False, False, 3, 1),))
+        self.window._session = Mock(config=NodeConfig("jump", 22, "alice"))
+        for alias in ("cft02", "cft03"):
+            self.window._workers[alias] = Mock()
+            browser.set_connection(alias, listing)
+        result = [{"name": "x", "result": "same", "nodes": {}}]
+        with patch("nodebridge.window.RemoteSession.connect_shell_host", return_value=Mock()), \
+             patch("nodebridge.window.compare_remote_files_isolated", return_value=result) as compare:
+            self.window._schedule_auto_hash()
+            self._finish_background("_hash_job")
+            browser.set_listings({alias: listing for alias in ("cft02", "cft03")})
+            self.window._schedule_auto_hash()
+            self.assertIsNone(self.window._hash_job)
+            self.assertEqual(compare.call_count, 1)
+            changed = DirectoryListing("/shared", (RemoteEntry("x", "/shared/x", False, False, 3, 2),))
+            browser.set_listing("cft02", changed)
+            self.window._schedule_auto_hash()
+            self._finish_background("_hash_job")
+            self.assertEqual(compare.call_count, 2)
+            self.window._hash_cache = {key: (0, value[1]) for key, value in self.window._hash_cache.items()}
+            self.window._schedule_auto_hash()
+            self._finish_background("_hash_job")
+            self.assertEqual(compare.call_count, 3)
+
     def test_auto_hash_candidates_exclude_directories_and_known_differences(self):
         browser = self.window.worker_browser
         browser.path_edit.setText("/shared")
@@ -1002,6 +1110,61 @@ class WindowTests(unittest.TestCase):
         browser.set_listings({}, ["node02"])
         self.assertEqual(browser.table.rowCount(), 0)
 
+    def test_worker_switch_preserves_path_and_ascends_only_for_missing_directory(self):
+        browser = self.window.worker_browser
+        browser.mode.blockSignals(True)
+        browser.mode.setCurrentIndex(1)
+        browser.mode.blockSignals(False)
+        for alias in ("node02", "node03"):
+            browser.set_connection(alias, DirectoryListing("/old", ()))
+        target = Mock()
+        self.window._workers = {"node02": Mock(), "node03": target}
+        item = browser.nodes.topLevelItem(1)
+        for destination in ("/task/run", "/task", "/"):
+            with self.subTest(destination=destination):
+                calls = []
+
+                def read(path):
+                    calls.append(path)
+                    if path != destination:
+                        raise FileNotFoundError(2, "No such file")
+                    return DirectoryListing(path, ())
+
+                target.list_directory.side_effect = read
+                browser.path_edit.setText("/task/run")
+                browser._focus_item(item, 0)
+                self._finish_job()
+                expected = ["/task/run", "/task", "/"]
+                self.assertEqual(calls, expected[:expected.index(destination) + 1])
+                self.assertEqual(browser.path_edit.text(), destination)
+        self.window._workers["node02"].list_directory.assert_not_called()
+
+    def test_worker_switch_does_not_hide_permission_or_root_errors(self):
+        browser = self.window.worker_browser
+        browser.mode.blockSignals(True)
+        browser.mode.setCurrentIndex(1)
+        browser.mode.blockSignals(False)
+        browser.set_connection("node02", DirectoryListing("/old", ()))
+        target = Mock()
+        self.window._workers = {"node02": target}
+        for path, error in (("/task/run", PermissionError(13, "Denied")),
+                            ("/", FileNotFoundError(2, "Missing"))):
+            target.list_directory.reset_mock()
+            target.list_directory.side_effect = error
+            browser.path_edit.setText(path)
+            with patch("nodebridge.window.QMessageBox.warning") as warning:
+                browser._focus_item(browser.nodes.topLevelItem(0), 0)
+                self._finish_job()
+                warning.assert_called_once()
+            target.list_directory.assert_called_once_with(path)
+
+    def test_batch_result_rows_match_file_table(self):
+        results = self.window.batch_results
+        results.setRowCount(1)
+        self.assertEqual(results.rowHeight(0), self.window.table.verticalHeader().defaultSectionSize())
+        self.assertFalse(results.showGrid())
+        self.assertFalse(results.wordWrap())
+
     def test_failed_probe_is_gray_but_remains_selectable(self):
         browser = self.window.worker_browser
         browser.set_aliases(["cft02"])
@@ -1022,6 +1185,7 @@ class WindowTests(unittest.TestCase):
         self.window._session = jump
         browser = self.window.worker_browser
         browser.set_aliases(["cft02", "cft03"])
+        self.window._sync_terminal_nodes()
         with patch("nodebridge.window.RemoteSession.connect_shell_host", return_value=helper):
             self.window._probe_worker_aliases()
             self.assertIsNone(self.window._job)
@@ -1029,6 +1193,45 @@ class WindowTests(unittest.TestCase):
         helper.close.assert_called_once()
         self.assertEqual(browser.nodes.topLevelItem(0).text(1), "○ 可连接")
         self.assertEqual(browser.nodes.topLevelItem(1).text(1), "○ 不可连接")
+        tree = self.window.terminal_workspace.node_tree
+        item = next(tree.topLevelItem(index) for index in range(tree.topLevelItemCount())
+                    if tree.topLevelItem(index).text(0) == "cft03")
+        self.assertEqual(item.text(1), "不可连接")
+        self.assertEqual(item.foreground(0).color().name(), "#808080")
+        self.assertTrue(item.flags() & Qt.ItemFlag.ItemIsEnabled)
+        observed_at = self.window._node_status_revision
+        self.window._node_connected("cft03")
+        self.window._set_node_probe_statuses({"cft03": ("unreachable", "旧的结果")}, observed_at)
+        self.assertEqual(browser._probe_status["cft03"][0], "reachable")
+        self.assertEqual(self.window.terminal_workspace._node_statuses["worker:cft03"][0], "reachable")
+
+    def test_worker_connection_keeps_local_and_direct_browsing_available(self):
+        jump = Mock(config=NodeConfig("jump", 22, "alice"))
+        jump.list_directory.return_value = DirectoryListing("/direct", ())
+        self.window._session = jump
+        self.window.worker_browser.set_aliases(["cft02"])
+        self.window.worker_browser._check_all(True)
+        entered, release = threading.Event(), threading.Event()
+        worker = Mock()
+        worker.list_directory.return_value = DirectoryListing("/shared", ())
+        def connect(*_args):
+            entered.set()
+            release.wait(3)
+            return worker
+        with patch("nodebridge.window.RemoteSession.connect_alias", side_effect=connect):
+            self.window._connect_selected_workers()
+            try:
+                self.assertTrue(entered.wait(2))
+                self.assertIsNone(self.window._job)
+                self.assertTrue(self.window.local_table.isEnabled())
+                self.assertTrue(self.window.table.isEnabled())
+                self.assertFalse(self.window.disconnect_button.isEnabled())
+                self.window._browse("/direct")
+                self._finish_background("_job")
+                jump.list_directory.assert_called_once_with("/direct")
+            finally:
+                release.set()
+                self._finish_background("_worker_connect_job")
 
     def test_automatic_verification_has_no_manual_report_button(self):
         self.assertFalse(hasattr(self.window.worker_browser, "compare_files_button"))
@@ -1108,7 +1311,7 @@ class WindowTests(unittest.TestCase):
         good.open_sftp_peer.return_value = good
         good.list_directory.return_value = listing
         bad = Mock()
-        bad.open_sftp_peer.side_effect = OSError("channel limit")
+        self.transfer_failures["node03"] = OSError("channel limit")
         self.window._workers.update({"node02": good, "node03": bad})
         for alias in ("node02", "node03"):
             browser.set_connection(alias, listing)
@@ -1120,6 +1323,32 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(self.window.batch_results.rowCount(), 2)
         self.assertIn("node03", self.window.operation_log.toPlainText())
         self.assertIn("channel limit", self.window.operation_log.toPlainText())
+
+    def test_worker_copy_uses_transfer_pool_without_browse_peers(self):
+        jump = Mock(config=NodeConfig("jump.example.invalid", 22, "alice"))
+        self.window._session = jump
+        self.window._jump_password = "session-only-password"
+        browser = self.window.worker_browser
+        browser.path_edit.setText("/shared")
+        listing = DirectoryListing("/shared", ())
+        refused = Mock()
+        good = Mock()
+        good.list_directory.return_value = listing
+        refused.list_directory.return_value = listing
+        self.window._workers.update({"node02": refused, "node03": good})
+        for alias in ("node02", "node03"):
+            browser.set_connection(alias, listing)
+
+        with (patch.object(self.window, "_choose_worker_scope", return_value=["node02", "node03"]),
+              patch("nodebridge.window.copy_local_to_remote", return_value=CopyResult(1, 0, 4)) as copy):
+            browser.table.localPathsDropped.emit(["C:/source/a.txt"], "/shared")
+            self._finish_background("_copy_job")
+
+        self.assertEqual({call.args[0] for call in copy.call_args_list}, {refused, good})
+        self.assertIn("2/2 个节点成功", self.window.operation_log.toPlainText())
+        self.assertEqual(set(self.transfer_opened), {"node02", "node03"})
+        refused.open_sftp_peer.assert_not_called()
+        good.open_sftp_peer.assert_not_called()
 
     def test_worker_scope_dialog_targets_connected_nodes_even_if_unchecked(self):
         browser = self.window.worker_browser
@@ -1138,7 +1367,7 @@ class WindowTests(unittest.TestCase):
         with patch("nodebridge.window.QMessageBox.exec", new=choose_multiple):
             self.assertEqual(self.window._choose_worker_scope("复制"), ["node02", "node03"])
 
-    def test_jump_drop_on_work_nodes_uses_jump_session(self):
+    def test_jump_drop_on_work_nodes_uses_independent_jump_session(self):
         jump = Mock()
         jump.config = NodeConfig("jump.example.invalid", 22, "alice")
         jump.list_directory.return_value = DirectoryListing("/shared", ())
@@ -1151,9 +1380,10 @@ class WindowTests(unittest.TestCase):
         worker.open_sftp_peer.return_value = worker
         self.window._workers["node02"] = worker
         helper = Mock()
+        helper.list_directory.return_value = DirectoryListing("/shared", ())
+        jump.open_sftp_peer.return_value = helper
 
-        with patch("nodebridge.window.RemoteSession.connect", return_value=helper), \
-             patch("nodebridge.window.copy_remote_between_sessions", return_value=CopyResult(1, 0, 5)) as copy:
+        with patch("nodebridge.window.copy_remote_between_sessions", return_value=CopyResult(1, 0, 5)) as copy:
             browser.table.remotePathsDropped.emit(str(id(jump)), ["/shared/input.py"], "/shared/output")
             self._finish_job()
 
@@ -1195,6 +1425,7 @@ class WindowTests(unittest.TestCase):
         self.window.worker_browser.set_connection("node02", DirectoryListing("/shared", ()))
         helper = Mock()
         jump.open_sftp_peer.return_value = helper
+        helper.list_directory.return_value = DirectoryListing("/shared", ())
         with patch("nodebridge.window.copy_remote_between_sessions", return_value=CopyResult(1, 1, 4)) as copy:
             self.window._collect_workers_to_jump(
                 self.window.worker_browser.drag_token, ["/shared/task"], "/shared",
@@ -1205,7 +1436,7 @@ class WindowTests(unittest.TestCase):
         self.assertIs(copy.call_args.args[1], helper)
         self.assertEqual(copy.call_args.args[2:4], (["/shared/task"], "/shared"))
         self.assertEqual(copy.call_args.kwargs["root_suffix"], "node02")
-        helper.close.assert_called_once()
+        self.assertGreaterEqual(helper.close.call_count, 1)
 
     def test_collect_reports_missing_source_on_one_node_without_blocking_others(self):
         self.window._session = Mock()
@@ -1564,10 +1795,10 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(dialog.operation, "jump_to_workers")
         self.assertFalse(dialog.move.isEnabled())
 
-    def test_worker_connections_open_extra_jump_after_eight_nodes(self):
+    def test_worker_connections_reserve_transfer_slots_on_jump(self):
         jump = Mock()
         jump.config = NodeConfig("jump.example.invalid", 22, "alice")
-        helper = Mock()
+        helpers = [Mock(), Mock()]
         self.window._session = jump
         self.window._jump_password = "session-only-password"
         self.window.worker_browser.path_edit.setText("/shared")
@@ -1580,16 +1811,19 @@ class WindowTests(unittest.TestCase):
             worker.list_directory.return_value = DirectoryListing("/shared", ())
             return worker
 
-        with patch("nodebridge.window.RemoteSession.connect", return_value=helper) as connect_root, \
+        with patch("nodebridge.window.RemoteSession.connect", side_effect=helpers) as connect_root, \
              patch("nodebridge.window.RemoteSession.connect_alias", side_effect=connect_alias) as connect_worker:
             self.window._connect_selected_workers()
             self._finish_job()
 
-        connect_root.assert_called_once_with(jump.config, "session-only-password")
+        self.assertEqual(connect_root.call_count, 2)
+        self.assertTrue(all(call.args == (jump.config, "session-only-password")
+                            for call in connect_root.call_args_list))
         self.assertEqual(len(self.window._workers), 9)
         self.assertEqual(self.window.worker_browser.checked_aliases(), [])
-        self.assertEqual(sum(args.args[1] is helper for args in connect_worker.call_args_list), 1)
-        self.assertEqual(len(self.window._jump_helpers), 1)
+        self.assertEqual([sum(call.args[1] is host for call in connect_worker.call_args_list)
+                          for host in [jump, *helpers]], [4, 4, 1])
+        self.assertEqual(len(self.window._jump_helpers), 2)
 
     def test_disconnecting_jump_closes_work_nodes(self):
         jump = Mock()

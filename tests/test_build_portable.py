@@ -19,14 +19,19 @@ class PortableBuildTests(unittest.TestCase):
 
             def fake_build(args, **_kwargs):
                 bundle = Path(args[args.index("--distpath") + 1]) / "NodeBridge"
+                self.assertIn("portable-builds", Path(args[args.index("--workpath") + 1]).parts)
                 bundle.mkdir(parents=True, exist_ok=True)
                 (bundle / "NodeBridge.exe").write_bytes(b"exe")
+                _kwargs["stdout"].write("路径：西湖大学\\NodeBridge\n".encode("utf-8"))
+                self.assertEqual(_kwargs["env"]["PYTHONIOENCODING"], "utf-8")
+                self.assertEqual(_kwargs["stderr"], subprocess.STDOUT)
 
             with patch.object(build_portable, "ROOT", root), \
                  patch.object(build_portable.subprocess, "run", side_effect=fake_build):
                 build_portable.main()
 
             self.assertEqual((data / "sites.json").read_text(encoding="utf-8"), "private")
+            self.assertIn("路径：西湖大学", (root / "dist" / "build_portable_latest.log").read_text(encoding="utf-8"))
             with zipfile.ZipFile(root / "dist" / "NodeBridge-portable.zip") as archive:
                 self.assertIn("NodeBridge/NodeBridge.exe", archive.namelist())
                 self.assertNotIn("NodeBridge/data/sites.json", archive.namelist())

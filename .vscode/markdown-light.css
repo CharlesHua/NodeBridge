@@ -1,0 +1,27 @@
+/* Keep the built-in Markdown preview readable with any editor theme. */
+html,
+body,
+body.vscode-dark,
+body.vscode-light,
+body.vscode-high-contrast {
+    color-scheme: light;
+    background: #ffffff !important;
+    color: #24292f !important;
+    --vscode-editor-background: #ffffff;
+    --vscode-editor-foreground: #24292f;
+    --vscode-textLink-foreground: #0969da;
+    --vscode-textLink-activeForeground: #0550ae;
+    --vscode-textCodeBlock-background: #f6f8fa;
+    --vscode-textBlockQuote-background: #f6f8fa;
+    --vscode-textBlockQuote-border: #d0d7de;
+}
+
+body a { color: #0969da !important; }
+body pre, body code { background-color: #f6f8fa !important; color: #24292f; }
+body pre code { background: transparent !important; }
+/* Dark-theme syntax tokens can otherwise be almost white on a light block. */
+body pre code span { color: #24292f !important; }
+body blockquote { color: #57606a !important; border-color: #d0d7de !important; }
+body th, body td, body hr, body h1, body h2 { border-color: #d0d7de !important; }
+body tr { background: #ffffff !important; }
+body tr:nth-child(even) { background: #f6f8fa !important; }

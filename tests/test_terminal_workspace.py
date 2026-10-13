@@ -22,6 +22,30 @@ class TerminalWorkspaceTests(unittest.TestCase):
     def tearDown(self):
         self.workspace.close()
 
+    def test_multiline_broadcast_shift_enter_edits_enter_sends(self):
+        workspace = self.workspace
+        workspace.set_nodes([("primary", "cft01")])
+        workspace.add_terminal("primary")
+        sent = []
+        workspace.broadcastRequested.connect(lambda *args: sent.append(args))
+        field = workspace.broadcast_input
+        field.setText("echo first")
+        QTest.keyClick(field, Qt.Key.Key_Return, Qt.KeyboardModifier.ShiftModifier)
+        QTest.keyClicks(field, "echo second")
+        self.assertEqual(field.text(), "echo first\necho second")
+        self.assertEqual(sent, [])
+        QTest.keyClick(field, Qt.Key.Key_Return)
+        self.assertEqual(sent[0][1], "echo first\necho second")
+
+    def test_custom_commands_visibility_and_optional_description(self):
+        self.workspace.set_commands([
+            {"command": "hostname", "description": "", "visible": True},
+            {"command": "whoami", "description": "用户名", "visible": True},
+            {"command": "pwd", "description": "", "visible": False},
+        ])
+        self.assertEqual([button.text() for button in self.workspace.command_helpers],
+                         ["hostname", "whoami（用户名）"])
+
     def test_nodes_share_one_list_and_allow_multiple_terminal_tabs(self):
         workspace = self.workspace
         workspace.set_nodes([("worker:cft02", "cft02"), ("primary", "cft01")])

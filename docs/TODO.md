@@ -6,9 +6,13 @@ Design a persistent Task Workspace before implementing it. The proposed UI is a 
 
 先设计可保存的“任务工作区”，再实施。建议界面与“文件”“终端”并列为第三个标签页，并在各视图共用当前任务选择器；此布局尚未最终确认。按任务名称记录直连站点、间接节点、共同绝对工作路径及可选的逐节点覆盖、本地输入和以任务为先的结果位置。加载任务时填充现有文件界面；连接和文件操作仍由用户明确触发。实施一键流程前，先确定任务快照与结果清单如何关联后续的分发、汇集、核对及清理。任务成员是否改变批量文件操作的默认范围，项目所有者决定留待实现任务工作区时再讨论。
 
-Automatic background SHA-256 checking now starts after merged-directory refresh and uses separate connections from file operations. Batched commands reduce SSH process starts, but validate runtime and server load on the owner's cluster, especially for many large files; agree on a large-file policy and consider an explicit pause control or a safe unchanged-file cache. Verify `sha256sum -z` availability, unusual filenames, per-node errors, and two-command jump-channel capacity live. Decide whether a fallback is needed on hosts without that command.
+Automatic background SHA-256 checking now starts after merged-directory refresh and uses separate connections from file operations. A 60-second metadata-based cache reduces repeated work but cannot prove unchanged bytes when external tools preserve size and timestamps. Validate runtime and server load on the owner's cluster, especially for large files; agree on a large-file policy, explicit pause and force-recheck controls, and cache duration. Verify `sha256sum -z` availability, unusual filenames, per-node errors, and two-command jump-channel capacity live. Decide whether a fallback is needed on hosts without that command.
 
-合并目录刷新后现会通过独立连接在后台自动进行 SHA-256 核对。批量命令减少了 SSH 进程启动次数，但仍须在项目所有者的集群验证耗时和服务器负载，特别是大量大文件的场景；与所有者确定大文件策略，并考虑显式暂停及只在输入可证明未变化时复用结果。实测 `sha256sum -z` 是否可用、特殊文件名、逐节点错误及跳板同时运行两个命令的容量；再决定缺少该命令的节点是否需要后备方案。
+合并目录刷新后现会通过独立连接在后台自动进行 SHA-256 核对。60 秒元数据缓存可减少重复计算，但外部工具保留大小和时间戳时，无法据此证明内容不变。仍須在集群验证耗时和负载，尤其是大量大文件；确定大文件策略、显式暂停和强制重算入口，以及缓存时长。实测 `sha256sum -z` 是否可用、特殊文件名、逐节点错误及跳板同时运行两个命令的容量；再决定缺少该命令的节点是否需要后备方案。
+
+Continue separating ordinary file browsing and terminal connection batches from the shared job slot. Preserve per-connection SFTP serialization and keep destructive actions on a transfer's paths mutually exclusive. Add a visible task list and cancellation before allowing unlimited overlapping operations; closing a direct site must wait for dependent jobs. Indirect-node connection, copying, probing, and hashing already have separate background slots.
+
+继续把普通文件浏览、终端批量连接从共享任务位拆分。保持同一 SFTP 客户端串行访问，传输涉及路径的破坏性操作须互斥。开放更多并行操作前，补充可见任务列表和取消机制；关闭直连站点须等待依赖任务。间接节点连接、复制、探测和哈希已有独立后台任务位。
 
 Extend the automatic same-path SHA-256 comparison only after live testing: support recursive directory inventories, explicit handling of symlinks and changing files, and optional verification of bytes after collection or distribution. The current difference labels are a node-to-node snapshot, not a transfer receipt.
 

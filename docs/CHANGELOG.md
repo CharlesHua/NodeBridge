@@ -6,6 +6,64 @@ This file records user-visible changes. `Unreleased` describes work in the curre
 
 ## Unreleased / 未发布
 
+### Portable build verification — 2026-10-13 / 绿色版构建验证 — 2026-10-13
+
+Build `20261013-195551-a82b98` produced `dist/NodeBridge-portable.zip` (SHA-256: `0cec69d9204ee7eabaf3760fc17aeaa208eefed1515c151e17f95a077ec610cd`). Six focused checks passed. Archive integrity and required assets were checked; the ZIP excludes runtime `data` and site profiles. The executable started on the build machine with empty error/crash logs. This is an unpublished build of the working tree; clean-machine and live-cluster acceptance remain pending.
+
+构建 `20261013-195551-a82b98` 生成了 `dist/NodeBridge-portable.zip`（SHA-256：`0cec69d9204ee7eabaf3760fc17aeaa208eefed1515c151e17f95a077ec610cd`）。6 项定向检查通过，已核对压缩包完整性及必要资源，ZIP 排除了运行时 `data` 和站点资料。可执行文件在构建机器启动成功，错误及崩溃日志为空。这是尚未发布的工作区构建；干净机器及真实集群验收仍待完成。
+
+### Changes / 改动
+
+- Added workspace settings and a local stylesheet for a consistently light VS Code built-in Markdown preview.
+
+- 补充工作区设置和本地样式，使 VS Code 内置 Markdown 预览固定显示为浅色。
+
+- Switching nodes in single-node view first reads the same absolute directory, then tries successive parents only when the directory is missing, stopping at root. Operation-result rows now match the compact file-list height. Expanded the architecture reference with SSH layers, transfer isolation, xterm.js integration, and Qt task/layout principles.
+
+- 单节点查看时切换节点，先读取同一绝对目录，仅在目录不存在时逐级尝试父目录，直到根目录。操作结果表使用与文件列表相同的紧凑行高。架构文档补充 SSH 分层、传输隔离、xterm.js 集成和 Qt 任务／布局原理。
+
+- Indirect-node connections now use their own background task slot, keeping local and direct-node browsing and operations available. Probe failures appear gray in both Files and Terminal; a later successful connection restores the node, and stale probe replies cannot undo that success.
+
+- 间接节点连接使用独立后台任务位，不再阻止本地和直连节点浏览及操作。探测失败在文件页与终端页均显示为灰色；后续实际连接成功后恢复，过期探测结果不会覆盖新的连接成功状态。
+
+- Broadcast input supports multiple lines: Shift+Enter inserts a newline and Enter sends the entire draft. Tools → Command Manager edits built-in and custom command snippets, optional descriptions, and persistent toolbar visibility.
+
+- 广播输入支持多行：Shift+Enter 换行，Enter 发送整段内容。“工具 → 常用命令管理”可编辑预置和自定义命令、可选功能介绍及持久保存的工具栏显示勾选。
+
+- Automatic SHA-256 comparison reuses successful results for up to 60 seconds when the node connections, absolute paths, sizes, modification times, and file types match fresh listings. File operations invalidate this memory-only cache; cached results have an explanatory tooltip. Metadata equality is a heuristic, not proof that bytes are unchanged.
+
+- 自动 SHA-256 比较在节点连接、绝对路径、大小、修改时间及文件类型与新目录列表一致时，最多复用 60 秒内的成功结果。文件操作会清除这一内存缓存，缓存结果带有说明提示。元数据相同是变化判断线索，不能证明字节内容未变。
+
+- Fixed terminal Ctrl+V and Ctrl+Shift+V pasting clipboard text twice by cancelling the browser's default paste when the custom clipboard handler runs. Bracketed paste remains supported.
+
+- 修复终端 Ctrl+V 和 Ctrl+Shift+V 将剪贴板内容粘贴两遍的问题：自定义粘贴处理时取消浏览器的默认粘贴，仍支持括号粘贴模式。
+
+- Indirect-node browsing now uses at most four sessions per jump SSH connection. Parallel copies use a separate pool of authenticated jump connections, opening SFTP channels only for active node tasks and reusing idle jump connections. This keeps queued nodes from consuming transfer channels and lets browsing continue during a copy.
+
+- 间接节点浏览现每条跳板 SSH 连接最多承载四个会话。并行复制使用独立的已认证跳板连接池，仅为正在运行的节点任务打开 SFTP 通道，并复用空闲跳板连接。排队节点不占传输通道，复制期间仍可继续浏览。
+
+- The local file list now matches the remote lists' centered, regular-weight headers, Chinese file types, and hyphenated modification dates.
+
+- 本地文件列表现与远程列表一致：表头居中且不加粗，文件类型使用中文，修改日期使用短横线分隔。
+
+- The View menu can now hide or show the indirect-node pane independently; it starts visible and remembers the choice across launches.
+
+- “查看”菜单现可独立隐藏或显示间接节点面板；默认显示，并在下次启动时恢复选择。
+
+- Local file sizes now use the same byte counts with thousands separators as direct and indirect remote files; size sorting still uses the filesystem model's numeric values.
+
+- 本地文件大小现与直连及间接节点一致，按字节数并使用千位分隔符显示；大小排序仍使用文件系统模型的数值。
+
+### Windows portable preview — 2026-10-12 / Windows 绿色预览构建 — 2026-10-12
+
+Build `20261012-214316-204b85` regenerated `dist/NodeBridge-portable.zip` (SHA-256: `47abf90a0c2df5eb6cee1404bbcbeb7b486173601e2d303b55c68d296e88da7e`). The archive integrity check passed and contains no `data` or site profiles. Its build log is valid UTF-8 and preserves the Chinese project path without replacement characters. The packaging tests passed; this rebuild did not repeat the application startup or live-cluster checks.
+
+构建编号 `20261012-214316-204b85` 重新生成了 `dist/NodeBridge-portable.zip`（SHA-256：`47abf90a0c2df5eb6cee1404bbcbeb7b486173601e2d303b55c68d296e88da7e`）。压缩包完整性检查通过，不含 `data` 或站点资料。构建日志是有效的 UTF-8，中文项目路径没有被替换。打包测试通过；本次重建没有重复执行程序启动或真实集群测试。
+
+- The portable build script now captures PyInstaller output directly into a UTF-8 log, avoiding PowerShell redirection that corrupted Chinese paths in earlier build logs.
+
+- 绿色版构建脚本现将 PyInstaller 输出直接保存为 UTF-8 日志，避免 PowerShell 重定向导致早期构建日志中的中文路径乱码。
+
 ### Windows portable preview — 2026-10-09 / Windows 绿色预览构建 — 2026-10-09
 
 Build `20261009-204911-ac842e` produced a self-contained one-folder package and `dist/NodeBridge-portable.zip` (SHA-256: `707baf6b72eec66e8009308807372efe3f6ecc3b25fc8a20b7f62e88e9120847`). The archive integrity check passed; it contains Python 3.12, Qt WebEngine, the Chinese user guide and GPL license, and excludes `data` and site profiles. Thirty-nine focused tests passed, and the executable remained running in a local startup smoke check with empty diagnostic logs. This is a preview build, not a tagged release; a clean Windows machine and live cluster still need verification.

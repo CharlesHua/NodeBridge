@@ -31,11 +31,25 @@ class LocalFileModel(QFileSystemModel):
         self._icons = FileIcons()
 
     def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
+        if role == Qt.ItemDataRole.DisplayRole:
+            if index.column() == 1:
+                return "" if self.isDir(index) else f"{self.size(index):,}"
+            if index.column() == 2:
+                if self.isDir(index):
+                    return "文件夹"
+                if self.fileInfo(index).isSymLink():
+                    return "符号链接"
+                suffix = Path(self.fileName(index)).suffix.lstrip(".").upper()
+                return f"{suffix} 文件" if suffix else "文件"
+            if index.column() == 3:
+                return self.fileInfo(index).lastModified().toString("yyyy-MM-dd HH:mm")
         if role == Qt.ItemDataRole.DecorationRole and index.column() == 0 and not self.isDir(index):
             return self._icons.for_filename(self.fileName(index))
         return super().data(index, role)
 
     def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.ItemDataRole.DisplayRole):
+        if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.TextAlignmentRole:
+            return Qt.AlignmentFlag.AlignCenter
         if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
             if 0 <= section < len(self.HEADERS):
                 return self.HEADERS[section]
@@ -95,6 +109,7 @@ class LocalBrowser(QWidget):
         self.table.verticalHeader().setMinimumSectionSize(18)
         self.table.horizontalHeader().setFixedHeight(23)
         self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.horizontalHeader().setStyleSheet("QHeaderView::section { font-weight: normal; }")
         self.table.setItemDelegateForColumn(1, FileListDelegate(self.table))
         self.table.setColumnWidth(0, 185)
         self.table.setColumnWidth(1, 80)

@@ -8,7 +8,17 @@ For a new session, [HANDOFF.md](HANDOFF.md) lists the next acceptance checks. [P
 
 新会话可从 [HANDOFF.md](HANDOFF.md) 查看下一步验收事项；Windows 绿色版的构建和更新步骤见 [PORTABLE.md](PORTABLE.md)。用户可见的改动先记入 [CHANGELOG.md](CHANGELOG.md) 的“未发布”部分，实际发行时再归入带日期的版本章节。
 
+## Technical reference / 技术原理入口
+
+[ARCHITECTURE.md](ARCHITECTURE.md#ssh-layers) explains SSH connections, channels, sessions and MaxSessions, followed by [transfer isolation](ARCHITECTURE.md#transfer-isolation), [xterm.js and PTY data flow](ARCHITECTURE.md#terminal-pipeline), and [Qt layouts and background jobs](ARCHITECTURE.md#qt-layout). Read these before changing concurrency, connection lifetime, or terminal input; a background thread alone does not isolate SFTP requests or server session limits.
+
+[ARCHITECTURE.md](ARCHITECTURE.md#ssh-layers) 说明 SSH 连接、通道、会话和 MaxSessions，后续章节介绍[传输隔离](ARCHITECTURE.md#transfer-isolation)、[xterm.js 与 PTY 数据流](ARCHITECTURE.md#terminal-pipeline)以及 [Qt 布局和后台任务](ARCHITECTURE.md#qt-layout)。修改并发、连接生命周期或终端输入前先阅读；单纯放入后台线程，并不能隔离 SFTP 请求或服务端会话限额。
+
 ## Local environment / 本地环境
+
+When opening the repository folder in VS Code, `.vscode/settings.json` loads a local stylesheet to keep the built-in Markdown preview light regardless of the editor theme. Reopen the preview after changing these files. Third-party preview extensions may use separate theme settings.
+
+在 VS Code 中打开仓库文件夹时，`.vscode/settings.json` 会加载本地样式，使内置 Markdown 预览固定为浅色，不随编辑器主题变化。修改后重新打开预览即可；第三方预览扩展可能使用独立主题设置。
 
 Use the Python 3.12 Conda environment from `environment.yml`. The project package runs directly from the repository root; no editable installation is required. On Windows PowerShell:
 
