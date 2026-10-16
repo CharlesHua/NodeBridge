@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QUrl, Signal, Slot
+from PySide6.QtCore import QObject, Qt, QUrl, Signal, Slot
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineCore import QWebEnginePage
 from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -112,6 +112,7 @@ class RemoteTerminalWidget(QWebEngineView):
             self._bridge.inputEnabled.emit(self._input_enabled)
 
     def focus_terminal(self) -> None:
+        self.setFocus(Qt.FocusReason.OtherFocusReason)
         if self._ready:
             self._bridge.focusRequested.emit()
         else:

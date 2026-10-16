@@ -1205,6 +1205,67 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(browser._probe_status["cft03"][0], "reachable")
         self.assertEqual(self.window.terminal_workspace._node_statuses["worker:cft03"][0], "reachable")
 
+    def test_probe_updates_each_node_before_slow_node_finishes(self):
+        self.window._session = Mock(config=NodeConfig("jump", 22, "alice"))
+        browser = self.window.worker_browser
+        browser.set_aliases(["cft02", "cft03", "cft04"])
+        self.window._sync_terminal_nodes()
+        release = threading.Event()
+
+        def probe(alias):
+            if alias == "cft04":
+                release.wait(5)
+                return "reachable", "OK"
+            if alias == "cft03":
+                raise OSError("unreachable")
+            return "reachable", "OK"
+
+        helper = Mock(probe_alias=Mock(side_effect=probe))
+        with patch("nodebridge.window.RemoteSession.connect_shell_host", return_value=helper):
+            self.window._probe_worker_aliases()
+            try:
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline:
+                    self.app.processEvents()
+                    if (browser._probe_status["cft02"][0] == "reachable"
+                            and browser._probe_status["cft03"][0] == "error"):
+                        break
+                    QTest.qWait(10)
+                self.assertEqual(browser._probe_status["cft02"][0], "reachable")
+                self.assertEqual(browser._probe_status["cft03"][0], "error")
+                self.assertEqual(browser._probe_status["cft04"][0], "checking")
+                self.assertIsNotNone(self.window._probe_job)
+                statuses = self.window.terminal_workspace._node_statuses
+                self.assertEqual(statuses["worker:cft02"][0], "reachable")
+                self.assertEqual(statuses["worker:cft03"][0], "error")
+            finally:
+                release.set()
+                self._finish_background("_probe_job")
+        self.assertEqual(browser._probe_status["cft04"][0], "reachable")
+        helper.close.assert_called_once()
+
+    def test_incremental_probe_ignores_stale_and_cancelled_results(self):
+        jump = Mock()
+        self.window._session = jump
+        self.window.worker_browser.set_aliases(["cft02"])
+        cancel = threading.Event()
+        generation = self.window._probe_generation
+        revision = self.window._node_status_revision
+        result = (generation, jump, cancel, revision, "cft02", ("unreachable", "old"))
+        self.window._node_connected("cft02")
+        self.window._show_node_probe_result(result)
+        self.assertEqual(self.window.worker_browser._probe_status["cft02"][0], "reachable")
+        with patch.object(self.window, "_set_node_probe_statuses") as update:
+            cancel.set()
+            self.window._show_node_probe_result(result)
+            cancel.clear()
+            self.window._probe_generation += 1
+            self.window._show_node_probe_result(result)
+            self.window._probe_generation = generation
+            self.window._session = Mock()
+            self.window._show_node_probe_result(result)
+            update.assert_not_called()
+
     def test_worker_connection_keeps_local_and_direct_browsing_available(self):
         jump = Mock(config=NodeConfig("jump", 22, "alice"))
         jump.list_directory.return_value = DirectoryListing("/direct", ())

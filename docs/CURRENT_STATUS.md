@@ -1,5 +1,9 @@
 # Current status / 当前状态
 
+Reachability results are delivered individually to the GUI as parallel probes complete. Both node lists update immediately; the final summary still appears when the batch finishes. Generation, connection, cancellation, and successful-connection revision checks protect against stale results.
+
+并行可连接性探测每完成一个节点就向界面传递结果，两个节点列表立即更新，整批结束后仍显示汇总。通过检测批次、连接对象、取消状态和实际连接成功版本检查，避免旧结果覆盖新状态。
+
 Indirect-node file connections now run independently of the ordinary file-job slot; local/direct actions remain available. Probe status is shared with the terminal node list and later connection success supersedes older probe replies. Broadcast supports Shift+Enter multiline editing, and Tools → Command Manager persists command text, optional descriptions, and visibility. Automatic hashes may reuse successful metadata-matching results for 60 seconds. These changes have focused local tests; cluster validation remains pending.
 
 间接节点文件连接现独立于普通文件任务位运行，本地／直连操作保持可用。探测状态同步至终端节点列表，后续连接成功优先于过期探测结果。广播支持 Shift+Enter 多行编辑，“工具 → 常用命令管理”持久保存命令文本、可选介绍和显示状态。自动哈希可在元数据匹配时复用 60 秒内的成功结果。这些改动已有定向本地测试，仍需在集群验证。

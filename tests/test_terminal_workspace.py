@@ -218,6 +218,27 @@ class TerminalWorkspaceTests(unittest.TestCase):
         self.assertFalse(any("cft02" in action.text()
                              for action in workspace.tab_list_menu.actions()))
 
+    def test_combined_tab_can_hide_and_reopen_without_closing_sessions(self):
+        workspace = self.workspace
+        workspace.set_nodes([("worker:cft02", "cft02"), ("worker:cft03", "cft03")])
+        group = workspace.create_group(["worker:cft02", "worker:cft03"])
+        first = workspace.add_terminal("worker:cft02", group_id=group)
+        second = workspace.add_terminal("worker:cft03", group_id=group)
+        workspace.show_group_combined(group)
+        pane = workspace._combined_views[group]
+        workspace.begin_broadcast_round(group, "ls", {first: "cft02", second: "cft03"})
+        rounds = workspace._combined_rounds[group]
+        workspace.terminal_tabs.tabCloseRequested.emit(workspace.terminal_tabs.indexOf(pane))
+        self.assertEqual(workspace.terminal_tabs.indexOf(pane), -1)
+        self.assertEqual(workspace.group_sessions(group), [first, second])
+        self.assertFalse(workspace._closed_sessions)
+        self.assertIs(workspace._combined_rounds[group], rounds)
+        workspace._populate_tab_list()
+        reopen = next(a for a in workspace.tab_list_menu.actions() if a.text().startswith("重新打开联合"))
+        reopen.trigger()
+        self.assertIs(workspace.terminal_tabs.currentWidget(), pane)
+        self.assertIs(workspace._combined_rounds[group], rounds)
+
     def test_combined_view_stacks_real_shell_replies_in_node_order_with_colors(self):
         workspace = self.workspace
         workspace.set_nodes([("worker:cft10", "cft10"), ("worker:cft02", "cft02")])
@@ -397,6 +418,34 @@ class TerminalWorkspaceTests(unittest.TestCase):
         workspace.command_helpers[1].click()
         self.assertEqual(sent, [(session_id, b"\x05\x15mkdir ")])
         self.assertNotIn(b"\r", sent[0][1])
+
+    def test_command_helper_empty_prompt_does_not_send_kill_keys(self):
+        workspace = self.workspace
+        workspace.set_nodes([("primary", "cft01")])
+        sid = workspace.add_terminal("primary")
+        workspace.append_output(sid, "user@cft01:~$ ")
+        workspace._set_command_target("terminal", sid)
+        sent = []
+        workspace.inputRequested.connect(lambda session, data: sent.append(data))
+        with patch.object(workspace._views[sid].output, "focus_terminal") as focus:
+            workspace.command_helpers[4].click()
+            focus.assert_called_once()
+        self.assertEqual(sent, [b"ls"])
+        self.assertEqual(workspace.command_helpers[4].focusPolicy(), Qt.FocusPolicy.NoFocus)
+
+    def test_command_helper_restores_broadcast_focus_and_caret(self):
+        workspace = self.workspace
+        workspace.set_nodes([("primary", "cft01")])
+        workspace.add_terminal("primary")
+        workspace.show()
+        workspace.activateWindow()
+        workspace.broadcast_input.setFocus()
+        self.app.processEvents()
+        workspace._set_command_target("broadcast")
+        QTest.mouseClick(workspace.command_helpers[1], Qt.MouseButton.LeftButton)
+        self.app.processEvents()
+        self.assertTrue(workspace.broadcast_input.hasFocus())
+        self.assertEqual(workspace.broadcast_input.textCursor().position(), len("mkdir "))
 
     def test_command_helper_follows_last_input_focus_across_terminals_and_broadcast(self):
         workspace = self.workspace

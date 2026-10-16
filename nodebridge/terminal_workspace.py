@@ -363,6 +363,7 @@ class TerminalWorkspace(QWidget):
             if item["description"]:
                 label += f"（{item['description']}）"
             button = QPushButton(label)
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             button.clicked.connect(lambda _checked=False, value=item["command"]: self._insert_command_snippet(value))
             self.command_helpers.append(button)
             self.command_toolbar.addWidget(button)
@@ -823,10 +824,18 @@ class TerminalWorkspace(QWidget):
         kind, session_id = target
         if kind == "broadcast":
             self.broadcast_input.setText(snippet)
+            self.broadcast_input.setCursorPosition(len(snippet))
             self.broadcast_input.setFocus()
             return
         view = self._views[session_id]
-        self.inputRequested.emit(session_id, b"\x05\x15" + snippet.encode("utf-8"))
+        line = view.prompt_line()
+        prompt = PLAIN_PROMPT.match(line)
+        # Readline rings BEL when Ctrl+U tries to kill an empty input line.
+        draft = line[prompt.end():] if prompt else ""
+        if draft.startswith(" "):
+            draft = draft[1:]  # The normal prompt's separating space is not input.
+        clear = b"\x05\x15" if draft else b""
+        self.inputRequested.emit(session_id, clear + snippet.encode("utf-8"))
         view.output.focus_terminal()
 
     def _set_command_target(self, kind: str, session_id: str | None = None) -> None:
@@ -956,13 +965,20 @@ class TerminalWorkspace(QWidget):
                 lambda _checked=False, target=widget: self._select_tab_from_list(target)
             )
 
+        for group_id, pane in self._combined_views.items():
+            if self.terminal_tabs.indexOf(pane) < 0 and group_id in self._groups:
+                action = self.tab_list_menu.addAction(f"重新打开联合 · {self._groups[group_id].name}")
+                action.triggered.connect(
+                    lambda _checked=False, gid=group_id: self.show_group_combined(gid)
+                )
+
     def _select_tab_from_list(self, widget: QWidget) -> None:
         index = self.terminal_tabs.indexOf(widget)
         if index >= 0:
             self.terminal_tabs.setCurrentIndex(index)
 
     def _hide_tab(self, index: int) -> None:
-        if self.terminal_tabs.widget(index) in self._combined_views.values():
+        if index < 0 or index >= self.terminal_tabs.count():
             return
         self.terminal_tabs.removeTab(index)
         self._selection_changed()

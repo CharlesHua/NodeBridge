@@ -200,6 +200,7 @@ class MainWindow(QMainWindow):
     batchResultReady = Signal(object)
     workerDirectoryConflictRequested = Signal(object)
     autoCheckProgress = Signal(object)
+    nodeProbeResult = Signal(object)
 
     def __init__(self, settings: QSettings | None = None, *, log_path: Path | None = None):
         super().__init__()
@@ -486,6 +487,7 @@ class MainWindow(QMainWindow):
         self.batch_results.horizontalHeader().setStretchLastSection(True)
         file_layout.addWidget(self.batch_results)
         self.batchResultReady.connect(self._show_batch_result)
+        self.nodeProbeResult.connect(self._show_node_probe_result)
 
         self._install_file_actions()
         self.completion_toast = QLabel(self)
@@ -1331,6 +1333,13 @@ class MainWindow(QMainWindow):
 
         self._run(jump.discover_work_nodes, success, "正在发现直连节点可解析的工作主机…")
 
+    def _show_node_probe_result(self, result) -> None:
+        generation, jump, cancel, revision, alias, status = result
+        if (generation != self._probe_generation or self._session is not jump
+                or self._parents or cancel.is_set()):
+            return
+        self._set_node_probe_statuses({alias: status}, revision)
+
     def _probe_worker_aliases(self) -> None:
         jump = self._session
         if jump is None or self._parents:
@@ -1365,14 +1374,17 @@ class MainWindow(QMainWindow):
                             statuses[alias] = future.result()
                         except Exception as exc:
                             statuses[alias] = ("error", f"{type(exc).__name__}: {exc}")
+                        self.nodeProbeResult.emit((
+                            generation, jump, cancel, observed_revision, alias, statuses[alias],
+                        ))
             finally:
                 helper.close()
             return statuses
 
         def success(statuses):
-            if generation != self._probe_generation or self._session is not jump or self._parents:
+            if (generation != self._probe_generation or self._session is not jump
+                    or self._parents or cancel.is_set()):
                 return
-            self._set_node_probe_statuses(statuses, observed_revision)
             reachable = sum(state == "reachable" for state, _ in statuses.values())
             self.status.setText(
                 f"SSH 检测完成：{reachable}/{len(statuses)} 个候选节点可连接。"

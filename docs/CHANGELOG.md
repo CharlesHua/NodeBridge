@@ -6,6 +6,18 @@ This file records user-visible changes. `Unreleased` describes work in the curre
 
 ## Unreleased / 未发布
 
+- Closing a Combined terminal tab now hides it without disconnecting group sessions or deleting its history. The tab dropdown can reopen hidden Combined views.
+
+- 联合终端标签的关闭按钮现可隐藏该视图，不会断开组内连接或删除历史；标签下拉菜单可重新打开已隐藏的联合视图。
+
+- Common-command buttons preserve the previous input target and restore keyboard focus there. Broadcast drafts place the caret at the end; empty terminal prompts no longer receive unnecessary clear-line keys that can ring the Shell bell.
+
+- 常用命令按钮保留此前的输入目标，并将键盘焦点恢复到对应终端或广播框。广播草稿光标位于命令末尾；空终端提示符不再发送多余的清行按键，避免触发 Shell 提示音。
+
+- Reachability probing now updates each node in Files and Terminal as soon as its result arrives, without waiting for slower nodes. Cancelled or stale results cannot replace newer connection status.
+
+- 可连接性检测每获得一个节点结果，就立即更新文件页和终端页，无须等待较慢节点。取消或过期结果不会覆盖新的连接状态。
+
 ### Portable build verification — 2026-10-13 / 绿色版构建验证 — 2026-10-13
 
 Build `20261013-195551-a82b98` produced `dist/NodeBridge-portable.zip` (SHA-256: `0cec69d9204ee7eabaf3760fc17aeaa208eefed1515c151e17f95a077ec610cd`). Six focused checks passed. Archive integrity and required assets were checked; the ZIP excludes runtime `data` and site profiles. The executable started on the build machine with empty error/crash logs. This is an unpublished build of the working tree; clean-machine and live-cluster acceptance remain pending.
