@@ -6,6 +6,38 @@ This file records user-visible changes. `Unreleased` describes work in the curre
 
 ## Unreleased / 未发布
 
+- Vertically center the common-command label with the buttons in its row.
+
+- “常用命令”文字与同行按钮垂直居中对齐。
+
+- Common-command buttons now wrap into multiple rows when the terminal pane narrows, including when dragging the node/terminal splitter; widening it reduces the row count again.
+
+- 常用命令按钮随终端面板宽度自动换行；向右拖动节点／终端分隔线时会显示多行，拉宽后恢复较少行。
+
+- CPU/memory monitoring now starts only after the first visit to the Terminal tab, reducing work at initial connection. Subsequent tab switches keep background monitoring active without starting duplicate timers.
+
+- CPU／内存监控延后到首次进入“终端”页时启动，减少初次连接的后台工作；之后切换标签仍保持监控，不重复启动定时器。
+
+- Mitigated a Windows startup crash in Python's native traceback dumper: automatic native fault tracing is disabled on Windows by default. Python exceptions, background-thread exceptions and Qt warnings/errors remain logged. Native failures can be inspected in the Windows Application event log.
+
+- 针对 Windows 启动时 Python 原生栈输出器自身崩溃，默认关闭 Windows 自动原生异常栈捕获。Python 异常、后台线程异常及 Qt 警告／错误仍记录；原生故障可查看 Windows 应用程序事件日志。
+
+- The terminal node list now shows whole-node CPU and memory usage for the direct site and reachable indirect nodes. A separate SSH monitor samples Linux `/proc` data with at most two concurrent queries, waits five seconds between rounds, and backs off failed nodes for 30 seconds. Updates preserve scrolling; monitoring stops on disconnect or exit.
+
+- 终端节点列表新增整机 CPU 和内存用量，覆盖直连站点及可连接间接节点。独立 SSH 监控读取 Linux `/proc`，最多并发查询两个节点，每轮结束后等待 5 秒，失败节点延后 30 秒重试。更新保留滚动位置，断开或退出时停止监控。
+
+- Site Manager can select one direct site to connect automatically after the main window opens. Encrypted passwords require master-password unlock; cancelling leaves the app disconnected. Existing SSH connection and host-key checks remain in use.
+
+- 站点管理器可选择一个直连站点，在主窗口打开后自动连接。加密密码须先输入主密码解锁；取消后保持未连接。连接继续沿用现有 SSH 和主机密钥校验流程。
+
+- Copies from local/direct panes to indirect nodes now ask before creating missing destination directories, including parent directories. Users can skip that node or apply their choice to subsequent missing destinations in the same batch; existing directories proceed normally.
+
+- 本地／直连节点向间接节点复制时，目标路径缺失会先询问是否创建所需各级目录。可跳过该节点，或将选择应用于本批次后续缺失路径；已有目录的节点照常复制。
+
+- Node reachability updates now edit existing rows in place, preserving scroll position, selection, checkboxes and collapsed terminal branches while probing continues.
+
+- 节点可连接性状态改为原位更新，检测期间保留滚动位置、当前选择、勾选及终端分支折叠状态，避免列表跳回上方。
+
 - Closing a Combined terminal tab now hides it without disconnecting group sessions or deleting its history. The tab dropdown can reopen hidden Combined views.
 
 - 联合终端标签的关闭按钮现可隐藏该视图，不会断开组内连接或删除历史；标签下拉菜单可重新打开已隐藏的联合视图。

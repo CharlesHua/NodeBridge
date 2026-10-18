@@ -29,6 +29,7 @@ class Site:
     username: str
     key_file: str = ""
     password: str = ""
+    auto_connect: bool = False
 
     @classmethod
     def create(cls, name: str = "新站点") -> "Site":
@@ -101,8 +102,15 @@ class SiteStore:
                 id=str(entry["id"]), name=str(entry["name"]), host=str(entry["host"]),
                 port=int(entry["port"]), username=str(entry["username"]),
                 key_file=str(entry.get("key_file", "")), password=password,
+                auto_connect=entry.get("auto_connect") is True,
             ))
         return result
+
+    def has_startup_site(self) -> bool:
+        """Read only nonsecret metadata, without requiring a master password."""
+        return self.path.exists() and any(
+            entry.get("auto_connect") is True for entry in self._read()["sites"]
+        )
 
     def reset_encrypted_passwords(self) -> None:
         """Discard inaccessible passwords while retaining nonsecret site metadata."""

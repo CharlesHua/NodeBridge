@@ -1,5 +1,9 @@
 # Windows portable build / Windows 绿色版
 
+Windows native crash tracing is now disabled by default because the CPython traceback dumper itself crashed during Windows exception handling. `errors.log` still records Python/Qt failures; `crash.log` records this configuration. Inspect Windows Application events for native failures. Diagnostic opt-in `NODEBRIDGE_NATIVE_TRACE=1` enables current-thread native tracing and may reintroduce the crash. References below to automatic native traces apply only when tracing is enabled.
+
+由于 CPython 栈输出器在处理 Windows 异常时自身崩溃，Windows 现默认关闭自动原生崩溃栈捕获。`errors.log` 仍记录 Python／Qt 错误，`crash.log` 记录此配置；原生故障请查看 Windows 应用程序事件日志。诊断时可用 `NODEBRIDGE_NATIVE_TRACE=1` 启用当前线程原生栈捕获，但可能再次触发崩溃。下文关于自动原生栈记录的说明仅适用于启用捕获时。
+
 `dist` is short for **distribution** and contains build outputs rather than source code. `dist/NodeBridge-portable.zip` is the latest portable archive. Each `dist/portable-builds/<build-id>/NodeBridge/` folder contains a build's `NodeBridge.exe`, its required `_internal` runtime components, and `LICENSE`. The older `dist/NodeBridge/` folder is a previous test build, not the latest output of the current build script. Git ignores these generated files.
 
 `dist` 是 **distribution**（发行文件）的缩写，存放构建产物，而不是源代码。`dist/NodeBridge-portable.zip` 是最新的绿色版压缩包。每个 `dist/portable-builds/<构建编号>/NodeBridge/` 文件夹包含该次构建的 `NodeBridge.exe`、运行所需的 `_internal` 组件和 `LICENSE`。较早的 `dist/NodeBridge/` 是旧测试版本，不是当前构建脚本的最新输出。Git 会忽略这些生成文件。

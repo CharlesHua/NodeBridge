@@ -73,8 +73,10 @@ from nodebridge.file_icons import FileIcons
 from nodebridge.command_dialog import CommandManagerDialog, load_commands
 from nodebridge.remote import DirectoryListing, NodeConfig, NodeDiscovery, RemoteSession, TransferSessionPool
 from nodebridge.site_dialog import SiteManagerDialog
-from nodebridge.sites import SiteStore
+from nodebridge.sites import LockedSiteStore, SiteStore
+from nodebridge.resource_monitor import ResourceMonitor
 from nodebridge.transfer import (
+    ensure_remote_destination,
     ConflictAction,
     ConflictInfo,
     CopyResult,
@@ -112,6 +114,15 @@ class WorkerDirectoryPrompt:
     aliases: list[str]
     done: threading.Event = field(default_factory=threading.Event)
     choice: str = "cancel"
+
+
+@dataclass
+class MissingDestinationPrompt:
+    alias: str
+    path: str
+    missing: list[str]
+    done: threading.Event = field(default_factory=threading.Event)
+    create: bool = False
 
 
 @dataclass(frozen=True)
@@ -201,6 +212,7 @@ class MainWindow(QMainWindow):
     workerDirectoryConflictRequested = Signal(object)
     autoCheckProgress = Signal(object)
     nodeProbeResult = Signal(object)
+    missingDestinationRequested = Signal(object)
 
     def __init__(self, settings: QSettings | None = None, *, log_path: Path | None = None):
         super().__init__()
@@ -236,6 +248,10 @@ class MainWindow(QMainWindow):
         self._pending_worker_refresh: tuple[str, bool] | None = None
         self._pending_worker_probe = False
         self._probe_job: JobThread | None = None
+        self._resource_monitor = None
+        self._resource_timer = QTimer(self)
+        self._resource_timer.setInterval(1000)
+        self._resource_timer.timeout.connect(self._refresh_resource_monitor)
         self._worker_connect_job: JobThread | None = None
         self._node_verified_revision: dict[str, int] = {}
         self._node_status_revision = 0
@@ -367,6 +383,7 @@ class MainWindow(QMainWindow):
         self._terminal_manager.terminalClosed.connect(self._terminal_closed)
         self._terminal_manager.inputFailed.connect(self._terminal_input_failed)
         self.workspace_tabs.addTab(self.terminal_workspace, "终端")
+        self.workspace_tabs.currentChanged.connect(self._workspace_changed)
         self.workspace_splitter = QSplitter(Qt.Orientation.Vertical)
         self.workspace_splitter.setChildrenCollapsible(False)
         self.workspace_splitter.addWidget(self.workspace_tabs)
@@ -488,6 +505,7 @@ class MainWindow(QMainWindow):
         file_layout.addWidget(self.batch_results)
         self.batchResultReady.connect(self._show_batch_result)
         self.nodeProbeResult.connect(self._show_node_probe_result)
+        self.missingDestinationRequested.connect(self._show_missing_destination)
 
         self._install_file_actions()
         self.completion_toast = QLabel(self)
@@ -515,6 +533,60 @@ class MainWindow(QMainWindow):
             )
         sources.update((f"worker:{alias}", (alias, session)) for alias, session in self._workers.items())
         return sources
+
+    def _workspace_changed(self, _index):
+        if self.workspace_tabs.currentWidget() is self.terminal_workspace:
+            self.enable_resource_monitoring()
+
+    def enable_resource_monitoring(self):
+        if not self._resource_timer.isActive():
+            self._resource_timer.start()
+
+    def _refresh_resource_monitor(self):
+        jump = self._session
+        monitor = self._resource_monitor
+        if monitor is not None and getattr(monitor, "owner_session", None) is not jump:
+            monitor.cancel.set()
+        if jump is None or self._parents or self._close_when_background_idle:
+            if monitor is not None:
+                monitor.cancel.set()
+            return
+        targets = {f"primary:{id(jump)}": None}
+        for alias, (state, _detail) in self.worker_browser._probe_status.items():
+            if state == "reachable":
+                targets[f"worker:{alias}"] = alias
+        targets.update((f"worker:{alias}", alias) for alias in self._workers)
+        if monitor is None:
+            if self._job is not None:
+                return
+            monitor = ResourceMonitor(jump.config, self._jump_password, self)
+            monitor.owner_session = jump
+            self._resource_monitor = monitor
+            monitor.result.connect(lambda result: self._resource_result(monitor, jump, result))
+            monitor.finished.connect(lambda: self._resource_finished(monitor))
+            monitor.finished.connect(monitor.deleteLater)
+            monitor.set_targets(targets)
+            monitor.start()
+        elif not monitor.cancel.is_set():
+            monitor.set_targets(targets)
+        for node_id in list(self.terminal_workspace._resource_values):
+            if node_id not in targets:
+                self.terminal_workspace.set_resource_usage(node_id, None, None, "节点当前不可连接")
+
+    def _resource_result(self, monitor, jump, result):
+        if (self._resource_monitor is monitor and self._session is jump
+                and not self._parents and not monitor.cancel.is_set()):
+            node_id = result[0]
+            if node_id.startswith("worker:"):
+                alias = node_id[len("worker:"):]
+                if alias not in self._workers and self.worker_browser._probe_status.get(alias, ("", ""))[0] != "reachable":
+                    return
+            self.terminal_workspace.set_resource_usage(*result)
+
+    def _resource_finished(self, monitor):
+        if self._resource_monitor is monitor:
+            self._resource_monitor = None
+        self._finish_background_close()
 
     def _sync_terminal_nodes(self) -> None:
         sources = self._terminal_sources()
@@ -1232,6 +1304,48 @@ class MainWindow(QMainWindow):
                            self.worker_browser.connect_button, self.worker_browser.disconnect_button,
                            self.worker_browser.add_button):
                 widget.setEnabled(False)
+
+    def connect_startup_site(self) -> None:
+        if self._session is not None or self._job is not None:
+            return
+        try:
+            if not self._site_store.has_startup_site():
+                return
+            try:
+                sites = self._site_store.load()
+            except LockedSiteStore:
+                while True:
+                    password, accepted = QInputDialog.getText(
+                        self, "启动连接：解锁站点密码", "请输入 NodeBridge 主密码：",
+                        QLineEdit.EchoMode.Password,
+                    )
+                    if not accepted:
+                        return
+                    try:
+                        self._site_store.unlock(password)
+                        sites = self._site_store.load()
+                        break
+                    except ValueError as exc:
+                        QMessageBox.warning(self, "解锁失败", str(exc))
+            selected = [site for site in sites if site.auto_connect]
+            if len(selected) != 1:
+                raise ValueError("请在站点管理器中仅选择一个自动连接站点。")
+            site = selected[0]
+            if not site.host or not site.username:
+                raise ValueError("自动连接站点缺少主机或用户名，请在站点管理器中补全。")
+            password = site.password or None
+            if self._site_store.mode == "none" and not password and not site.key_file:
+                password, accepted = QInputDialog.getText(
+                    self, "启动连接：站点密码", f"请输入“{site.name}”的连接密码（免密可留空）：",
+                    QLineEdit.EchoMode.Password,
+                )
+                if not accepted:
+                    return
+            self._start_connection(
+                NodeConfig(site.host, site.port, site.username, site.key_file or None), password or None, None,
+            )
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            QMessageBox.warning(self, "启动连接", f"无法自动连接站点：{exc}")
 
     def _open_site_manager(self) -> None:
         try:
@@ -2170,6 +2284,16 @@ class MainWindow(QMainWindow):
         self._apply_conflict_choice = None
         self.batch_results.setRowCount(0)
         self._batch_mode_label = next(label for label, key in BatchDialog.MODES if key == mode)
+        self._missing_destination_choice = None
+
+        def prepare_destination(alias, session):
+            def confirm(missing):
+                with self._conflict_lock:
+                    prompt = MissingDestinationPrompt(alias, destination, missing)
+                    self.missingDestinationRequested.emit(prompt)
+                    prompt.done.wait()
+                    return prompt.create
+            return ensure_remote_destination(session, destination, confirm)
 
         def work_one(
             alias: str, session: RemoteSession, transfer_pool: TransferSessionPool | None = None,
@@ -2184,6 +2308,9 @@ class MainWindow(QMainWindow):
             source_session = session if worker_sources else jump if mode.startswith("jump_") else None
             source_paths = worker_sources or sources
             before = source_snapshot(source_session, source_paths) if moving else None
+            if mode in {"local_to_workers", "jump_to_workers"}:
+                if not prepare_destination(alias, session):
+                    return BatchResult(alias, copied=CopyResult(0, 0, 0, skipped=len(sources)))
             if mode == "local_to_workers":
                 result = copy_local_to_remote(session, sources, destination, progress, self._resolve_conflict)
             elif mode == "local_to_jump":
@@ -2680,6 +2807,31 @@ class MainWindow(QMainWindow):
             return prompt.action
 
     @Slot(object)
+    def _show_missing_destination(self, prompt: MissingDestinationPrompt) -> None:
+        from PySide6.QtWidgets import QCheckBox
+        try:
+            if self._missing_destination_choice is not None:
+                prompt.create = self._missing_destination_choice
+                return
+            dialog = QMessageBox(self)
+            dialog.setWindowTitle("目标目录不存在")
+            dialog.setIcon(QMessageBox.Icon.Question)
+            dialog.setText(f"节点 {prompt.alias} 的目标目录不存在：\n{prompt.path}")
+            dialog.setInformativeText("是否创建缺少的各级目录后复制？\n跳过则不向此节点复制，其他节点继续。")
+            dialog.setDetailedText("需要创建：\n" + "\n".join(prompt.missing))
+            create = dialog.addButton("新建路径并复制", QMessageBox.ButtonRole.AcceptRole)
+            skip = dialog.addButton("跳过此节点", QMessageBox.ButtonRole.RejectRole)
+            dialog.setDefaultButton(skip)
+            checkbox = QCheckBox("总是使用此操作（仅本次复制任务）", dialog)
+            dialog.setCheckBox(checkbox)
+            dialog.exec()
+            prompt.create = dialog.clickedButton() is create
+            if checkbox.isChecked() and dialog.clickedButton() in (create, skip):
+                self._missing_destination_choice = prompt.create
+        finally:
+            prompt.done.set()
+
+    @Slot(object)
     def _show_conflict_prompt(self, prompt: ConflictPrompt) -> None:
         try:
             if self._apply_conflict_choice is not None:
@@ -2803,6 +2955,8 @@ class MainWindow(QMainWindow):
         self._probe_generation += 1
         self._probe_cancel.set()
         self._pending_worker_probe = False
+        if self._resource_monitor is not None:
+            self._resource_monitor.cancel.set()
 
         workers = list(self._workers.values())
         helpers = list(self._jump_helpers)
@@ -3473,11 +3627,13 @@ class MainWindow(QMainWindow):
             if self._job is not None:
                 self._job.finished.connect(self.close)
             return
-        if self._hash_job is not None or self._probe_job is not None:
+        if self._hash_job is not None or self._probe_job is not None or self._resource_monitor is not None:
             event.ignore()
             self._close_when_background_idle = True
             self._cancel_auto_hash()
             self._probe_cancel.set()
+            if self._resource_monitor is not None:
+                self._resource_monitor.cancel.set()
             self.status.setText("正在结束后台校验和节点探测…")
             return
         for _created, temporary, _paths in self._drag_cache.values():
@@ -3490,5 +3646,6 @@ class MainWindow(QMainWindow):
         if (self._close_when_background_idle and self._job is None
                 and self._worker_connect_job is None
                 and self._copy_job is None and self._hash_job is None and self._probe_job is None
+                and self._resource_monitor is None
                 and self._session is None):
             QTimer.singleShot(0, self.close)

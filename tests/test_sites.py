@@ -12,6 +12,34 @@ from nodebridge.sites import LockedSiteStore, Site, SiteStore
 
 
 class SiteTests(unittest.TestCase):
+    def test_startup_site_persists_and_selection_is_exclusive(self):
+        from dataclasses import replace
+        with tempfile.TemporaryDirectory() as temporary:
+            store = SiteStore(Path(temporary) / "sites.json")
+            self.assertFalse(store.has_startup_site())
+            first = replace(Site.create("first"), auto_connect=True)
+            second = Site.create("second")
+            store.save([first, second])
+            self.assertTrue(store.has_startup_site())
+            dialog = SiteManagerDialog(store)
+            self.addCleanup(dialog.close)
+            self.assertTrue(dialog.auto_connect.isChecked())
+            dialog.site_list.setCurrentRow(1)
+            dialog.auto_connect.setChecked(True)
+            dialog._commit_form()
+            self.assertEqual([site.auto_connect for site in dialog.sites], [False, True])
+            store.save(dialog.sites)
+            self.assertEqual([site.auto_connect for site in store.load()], [False, True])
+            dialog._duplicate_site()
+            self.assertFalse(dialog.sites[-1].auto_connect)
+
+    def test_startup_metadata_does_not_require_unlock(self):
+        from dataclasses import replace
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "sites.json"
+            SiteStore(path).save([replace(Site.create(), auto_connect=True)], mode="master", master_password="test")
+            self.assertTrue(SiteStore(path).has_startup_site())
+
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])

@@ -5,6 +5,7 @@ from __future__ import annotations
 import atexit
 import faulthandler
 import logging
+import os
 import sys
 import threading
 from logging.handlers import RotatingFileHandler
@@ -64,6 +65,19 @@ def install_diagnostics(log_directory: Path | None = None) -> Path:
     qInstallMessageHandler(_qt_handler)
     if _fault_stream is None:
         _fault_stream = (folder / "crash.log").open("a", encoding="utf-8")
-        faulthandler.enable(file=_fault_stream, all_threads=True)
+        # Windows UI Automation can raise handled first-chance COM exceptions.
+        # On the affected CPython 3.12 build, dumping all thread stacks here
+        # itself faulted in python312.dll. Keep normal exception/Qt logging;
+        # native tracing is an explicit diagnostic opt-in on Windows.
+        native_trace = sys.platform != "win32" or os.environ.get("NODEBRIDGE_NATIVE_TRACE") == "1"
+        if native_trace:
+            faulthandler.enable(file=_fault_stream, all_threads=sys.platform != "win32")
+        else:
+            faulthandler.disable()
+            _fault_stream.write(
+                "Windows native traceback handler disabled for startup stability; "
+                "Python/Qt errors remain in errors.log. Native crashes: Windows Application event log.\n"
+            )
+            _fault_stream.flush()
         atexit.register(_fault_stream.close)
     return path

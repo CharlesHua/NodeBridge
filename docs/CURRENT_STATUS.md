@@ -1,5 +1,21 @@
 # Current status / 当前状态
 
+Resource monitoring is lazy-started on the first Terminal-tab visit in each application run, not on initial site connection. After that visit, tab switching does not stop or duplicate polling.
+
+每次运行仅在首次进入终端页后启动资源监控，初次连接站点不会触发；启动后切换标签不会停止或重复轮询。
+
+Windows startup mitigation disables automatic native stack tracing by default after access violations inside the CPython traceback dumper. Six diagnostic/monitor checks passed; a native Windows window ran for 12 seconds with 150 simulated resource samples and closed normally with an empty error log. Actual cluster startup still needs user confirmation. Historical native-trace descriptions below do not describe the new Windows default.
+
+Windows 启动修正针对 CPython 栈输出器内部访问冲突，默认关闭自动原生栈捕获。6 项诊断／监控检查通过；真实 Windows 窗口运行 12 秒，完成 150 次模拟资源采样，正常退出且错误日志为空。实际集群启动仍待用户确认；下文历史原生栈记录描述不代表新的 Windows 默认行为。
+
+The terminal node list now has CPU and memory columns backed by a separate, cancellable Linux SSH resource monitor. It samples reachable nodes with two concurrent requests and a five-second pause between rounds; failures back off for 30 seconds. Parsing, CPU deltas, strict SSH query construction, connection cleanup, target filtering and in-place UI updates have focused local tests. Cluster performance and packaged behavior remain unverified.
+
+终端节点列表新增 CPU 和内存列，由独立、可取消的 Linux SSH 资源监控提供数据。可连接节点最多两个并发请求，每轮结束暂停五秒；失败延迟 30 秒重试。解析、CPU 差值、严格 SSH 查询构造、连接释放、目标过滤和界面原位更新已有定向本地测试。集群性能与打包版行为尚待验证。
+
+Site profiles can mark one direct site for startup connection. The application schedules it after showing the main window, uses the existing background connection path, and prompts for master-password unlock or an unsaved password when needed. Cancellation leaves the app disconnected; there is no automatic retry loop. Startup and profile persistence have local tests; packaged/live SSH acceptance remains pending.
+
+站点资料可标记一个启动时连接的直连站点。应用显示主窗口后调度该连接，复用现有后台连接流程，必要时询问主密码或未保存的密码。取消后保持未连接，不自动循环重试。启动及设置保存已有本地测试；打包版与真实 SSH 验收仍待完成。
+
 Reachability results are delivered individually to the GUI as parallel probes complete. Both node lists update immediately; the final summary still appears when the batch finishes. Generation, connection, cancellation, and successful-connection revision checks protect against stale results.
 
 并行可连接性探测每完成一个节点就向界面传递结果，两个节点列表立即更新，整批结束后仍显示汇总。通过检测批次、连接对象、取消状态和实际连接成功版本检查，避免旧结果覆盖新状态。
@@ -70,9 +86,9 @@ NodeBridge has an application icon used by its source-run main window and Qt app
 
 NodeBridge 现有应用图标，源码运行时用于主窗口和 Qt 应用；仓库包含可编辑 SVG、PNG 和多尺寸 Windows ICO。试验性可执行文件已嵌入图标；仍需人工检查资源管理器和任务栏中的显示效果。
 
-Tab in an individual terminal now reaches the remote Shell instead of moving Qt focus, enabling that Shell's normal command and path completion; remote BEL still sounds locally. The broadcast input regains focus after a successful send. Eight helper buttons appear in one toolbar row with command-and-purpose labels; narrow windows use the toolbar overflow menu. They replace the draft in the last focused command entry, either the broadcast field or a live terminal, without executing it. They provide `cd`, `mkdir`, `rm -r`, `cd ..`, `ls`, `ls -a`, `ls -lh`, and `pwd`. The Combined view adds a blank line when all recipients of a broadcast have finished replying.
+Tab in an individual terminal now reaches the remote Shell instead of moving Qt focus, enabling that Shell's normal command and path completion; remote BEL still sounds locally. The broadcast input regains focus after a successful send. Helper buttons show command-and-purpose labels and automatically wrap into multiple rows as the terminal pane narrows. They replace the draft in the last focused command entry, either the broadcast field or a live terminal, without executing it. They provide `cd`, `mkdir`, `rm -r`, `cd ..`, `ls`, `ls -a`, `ls -lh`, and `pwd`. The Combined view adds a blank line when all recipients of a broadcast have finished replying.
 
-单终端的 Tab 现可送达远程 Shell，而不再切换 Qt 焦点，因此能使用该 Shell 自带的命令和路径补全；远端 BEL 仍在本地响铃。广播成功发送后焦点返回广播输入框。八个助手按钮在同一行的工具栏上显示“命令（功能）”；窗口较窄时使用工具栏溢出菜单。按钮会替换最近获得输入焦点的广播框或活动终端中的草稿，不会直接执行；模板包括 `cd`、`mkdir`、`rm -r`、`cd ..`、`ls`、`ls -a`、`ls -lh` 和 `pwd`。一次广播所有目标都结束反馈后，联合视图会增加一个空行。
+单终端的 Tab 现可送达远程 Shell，而不再切换 Qt 焦点，因此能使用该 Shell 自带的命令和路径补全；远端 BEL 仍在本地响铃。广播成功发送后焦点返回广播输入框。助手按钮显示“命令（功能）”，终端面板变窄时自动换成多行显示。按钮会替换最近获得输入焦点的广播框或活动终端中的草稿，不会直接执行；模板包括 `cd`、`mkdir`、`rm -r`、`cd ..`、`ls`、`ls -a`、`ls -lh` 和 `pwd`。一次广播所有目标都结束反馈后，联合视图会增加一个空行。
 
 The common-command toolbar is outside the broadcast box, directly beneath it. The box no longer has a mode checkbox; group and recipient selection govern sending.
 

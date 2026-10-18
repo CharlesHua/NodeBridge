@@ -6,15 +6,16 @@ import re
 from dataclasses import dataclass
 
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QComboBox, QHBoxLayout, QLabel, QPlainTextEdit,
     QInputDialog, QMenu, QMessageBox, QPushButton, QSizePolicy, QSplitter, QTabBar, QTabWidget,
-    QToolBar, QToolButton,
+    QToolButton,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from nodebridge.node_check_tree import NodeCheckTree
+from nodebridge.flow_layout import FlowLayout
 from nodebridge.command_dialog import DEFAULT_COMMANDS
 from nodebridge.remote_terminal_widget import RemoteTerminalWidget
 
@@ -199,6 +200,7 @@ class TerminalWorkspace(QWidget):
         super().__init__(parent)
         self._nodes: dict[str, str] = {}
         self._node_statuses: dict[str, tuple[str, str]] = {}
+        self._resource_values = {}
         self._sessions: dict[str, TerminalRecord] = {}
         self._groups: dict[str, TerminalGroup] = {}
         self._next_group = 1
@@ -233,10 +235,12 @@ class TerminalWorkspace(QWidget):
         self.node_tree = NodeCheckTree(check_column=2)
         self.node_tree.setObjectName("terminalNodes")
         self.node_tree.setAlternatingRowColors(True)
-        self.node_tree.setHeaderLabels(["节点", "状态", "批量选择"])
+        self.node_tree.setHeaderLabels(["节点", "状态", "批量选择", "CPU", "内存"])
         self.node_tree.setColumnWidth(0, 125)
         self.node_tree.setColumnWidth(1, 75)
         self.node_tree.setColumnWidth(2, 80)
+        self.node_tree.setColumnWidth(3, 70)
+        self.node_tree.setColumnWidth(4, 140)
         self.node_tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.node_tree.itemClicked.connect(self._item_clicked)
         self.node_tree.itemChanged.connect(self._item_changed)
@@ -337,25 +341,27 @@ class TerminalWorkspace(QWidget):
         command_row.addWidget(self.broadcast_input, 1)
         command_row.addWidget(self.send_button)
         broadcast_layout.addLayout(command_row)
-        self.command_toolbar = QToolBar()
+        self.command_toolbar = QWidget()
         self.command_toolbar.setObjectName("terminalCommandHelpers")
-        self.command_toolbar.setMovable(False)
-        self.command_toolbar.setFloatable(False)
-        self.command_toolbar.addWidget(QLabel("常用命令："))
+        self.command_layout = FlowLayout(self.command_toolbar)
+        self.command_toolbar.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
         self.command_toolbar.setToolTip("替换当前输入，不会立即执行")
         self.command_helpers: list[QPushButton] = []
         self.set_commands(DEFAULT_COMMANDS)
         right_layout.addWidget(broadcast)
         right_layout.addWidget(self.command_toolbar)
         splitter.addWidget(right)
-        splitter.setSizes([300, 900])
+        splitter.setSizes([500, 900])
         layout.addWidget(splitter, 1)
         self._rebuild_tree()
 
     def set_commands(self, commands):
-        self.command_toolbar.clear()
+        while self.command_layout.count():
+            item = self.command_layout.takeAt(0)
+            item.widget().hide()
+            item.widget().deleteLater()
         self.command_helpers.clear()
-        self.command_toolbar.addWidget(QLabel("常用命令："))
+        self.command_layout.addWidget(QLabel("常用命令："))
         for item in commands:
             if not item["visible"]:
                 continue
@@ -366,7 +372,9 @@ class TerminalWorkspace(QWidget):
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             button.clicked.connect(lambda _checked=False, value=item["command"]: self._insert_command_snippet(value))
             self.command_helpers.append(button)
-            self.command_toolbar.addWidget(button)
+            self.command_layout.addWidget(button)
+        self.command_layout.invalidate()
+        self.command_toolbar.updateGeometry()
         self._update_command_helpers()
 
     def set_node_statuses(self, statuses):
@@ -375,7 +383,44 @@ class TerminalWorkspace(QWidget):
             if status[0] == "checking" and previous[0] in {"error", "unreachable", "untrusted", "auth"}:
                 continue
             self._node_statuses[node_id] = status
-        self._rebuild_tree()
+        # Status-only updates must not rebuild the tree: that resets scrolling,
+        # selection and user-collapsed terminal branches.
+        for index in range(self.node_tree.topLevelItemCount()):
+            node = self.node_tree.topLevelItem(index)
+            node_id = node.data(0, ITEM_ROLE)[1]
+            if node_id not in statuses:
+                continue
+            state, detail = self._node_statuses.get(node_id, ("unknown", ""))
+            failed = state in {"error", "unreachable", "untrusted", "auth"}
+            count = sum(record.node_id == node_id for record in self._sessions.values())
+            node.setText(1, {"untrusted": "主机密钥待核验", "auth": "认证失败"}.get(state, "不可连接")
+                         if failed else f"{count} 个终端")
+            for column in (0, 1):
+                node.setForeground(column, QColor("gray") if failed else QBrush())
+                node.setToolTip(column, detail)
+
+    def set_resource_usage(self, node_id, cpu, sample, error=""):
+        from datetime import datetime
+        if sample is None:
+            values = ("—", "—", f"资源数据不可用：{error}")
+        else:
+            cpu_text = "采样中" if cpu is None else f"{cpu:.1f}%"
+            used, total = sample.memory_used / 1024**3, sample.memory_total / 1024**3
+            values = (cpu_text, f"{100 * sample.memory_used / sample.memory_total:.0f}% · {used:.1f}/{total:.1f} GiB",
+                      f"更新于 {datetime.now():%H:%M:%S}；整机 CPU（全部逻辑核合计归一为 100%）；"
+                      "内存按 MemTotal − MemAvailable 计算。")
+        self._resource_values[node_id] = values
+        for index in range(self.node_tree.topLevelItemCount()):
+            item = self.node_tree.topLevelItem(index)
+            if item.data(0, ITEM_ROLE) == ("node", node_id):
+                self._paint_resources(item, node_id)
+                break
+
+    def _paint_resources(self, item, node_id):
+        cpu, memory, tooltip = self._resource_values.get(node_id, ("—", "—", "尚未采集资源数据"))
+        for column, text in ((3, cpu), (4, memory)):
+            item.setText(column, text)
+            item.setToolTip(column, tooltip)
 
     def set_nodes(self, nodes: list[tuple[str, str]]) -> None:
         """Replace available nodes; node IDs are stable and labels are user facing."""
@@ -384,6 +429,7 @@ class TerminalWorkspace(QWidget):
             if record.node_id not in new_nodes:
                 self._remove_session(session_id)
         self._nodes = new_nodes
+        self._resource_values = {key: value for key, value in self._resource_values.items() if key in new_nodes}
         self._node_statuses = {key: value for key, value in self._node_statuses.items() if key in new_nodes}
         self._refresh_groups()
         self._rebuild_tree()
@@ -880,6 +926,7 @@ class TerminalWorkspace(QWidget):
                         node.setForeground(column, QColor("gray"))
                         node.setToolTip(column, detail)
                 node.setData(0, ITEM_ROLE, ("node", node_id))
+                self._paint_resources(node, node_id)
                 node.setFlags(node.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 node.setCheckState(2, Qt.CheckState.Checked if node_id in checked_nodes else Qt.CheckState.Unchecked)
                 if selected == node_id:

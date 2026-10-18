@@ -1176,6 +1176,104 @@ class WindowTests(unittest.TestCase):
         item.setCheckState(0, Qt.CheckState.Checked)
         self.assertEqual(browser.checked_aliases(), ["cft02"])
 
+    def test_missing_destination_remember_choice_and_release_waiter(self):
+        from nodebridge.window import MissingDestinationPrompt
+        self.window._missing_destination_choice = None
+        dialog = Mock()
+        create, skip = object(), object()
+        dialog.addButton.side_effect = [create, skip]
+        dialog.clickedButton.return_value = create
+        checkbox = Mock()
+        checkbox.isChecked.return_value = True
+        with patch("nodebridge.window.QMessageBox", return_value=dialog), \
+                patch("PySide6.QtWidgets.QCheckBox", return_value=checkbox):
+            prompt = MissingDestinationPrompt("cft02", "/task/out", ["/task", "/task/out"])
+            self.window._show_missing_destination(prompt)
+        self.assertTrue(prompt.create)
+        self.assertTrue(prompt.done.is_set())
+        for choice in (True, False):
+            self.window._missing_destination_choice = choice
+            with patch("nodebridge.window.QMessageBox") as constructor:
+                following = MissingDestinationPrompt("cft03", "/task/out", ["/task/out"])
+                self.window._show_missing_destination(following)
+                constructor.assert_not_called()
+            self.assertEqual(following.create, choice)
+            self.assertTrue(following.done.is_set())
+
+    def test_multinode_copy_creates_only_missing_destinations_after_confirmation(self):
+        self.window._session = Mock(config=NodeConfig("jump", 22, "alice"))
+        browser = self.window.worker_browser
+        browser.path_edit.setText("/task/out")
+        aliases = ["cft02", "cft03", "cft04"]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "input.txt"
+            source.write_text("payload")
+            for alias in aliases:
+                node_root = root / alias
+                node_root.mkdir()
+                if alias == "cft02":
+                    (node_root / "task/out").mkdir(parents=True)
+                worker = Mock(sftp=DiskBackedSFTP(node_root))
+                worker.list_directory.return_value = DirectoryListing("/task/out", ())
+                self.window._workers[alias] = worker
+                browser.set_connection(alias, DirectoryListing("/task/out", ()))
+            prompts = []
+            def approve(dialog):
+                prompts.append(dialog.text())
+                dialog.checkBox().setChecked(True)
+                next(button for button in dialog.buttons() if button.text() == "新建路径并复制").click()
+                return 0
+            with patch.object(self.window, "_choose_worker_scope", return_value=aliases), \
+                    patch.object(QMessageBox, "exec", approve):
+                browser.table.localPathsDropped.emit([str(source)], "/task/out")
+                self._finish_job()
+            self.assertEqual(len(prompts), 1)
+            self.assertNotIn("cft02", prompts[0])
+            for alias in aliases:
+                self.assertEqual((root / alias / "task/out/input.txt").read_text(), "payload")
+
+    def test_resource_monitor_starts_only_after_first_terminal_visit(self):
+        self.assertIs(self.window.workspace_tabs.currentWidget(), self.window.file_view)
+        self.assertFalse(self.window._resource_timer.isActive())
+        self.window._session = Mock(config=NodeConfig("jump", 22, "alice"))
+        self.window._sync_terminal_nodes()
+        self.app.processEvents()
+        self.assertFalse(self.window._resource_timer.isActive())
+        self.assertIsNone(self.window._resource_monitor)
+        self.window.workspace_tabs.setCurrentWidget(self.window.terminal_workspace)
+        self.assertTrue(self.window._resource_timer.isActive())
+        self.window.workspace_tabs.setCurrentWidget(self.window.file_view)
+        self.assertTrue(self.window._resource_timer.isActive())
+        with patch.object(self.window._resource_timer, "start") as start:
+            self.window.workspace_tabs.setCurrentWidget(self.window.terminal_workspace)
+            start.assert_not_called()
+        self.window._resource_timer.stop()
+
+    def test_resource_monitor_targets_reachable_nodes_and_preserves_rows(self):
+        from nodebridge.resource_monitor import Sample
+        jump = Mock(config=NodeConfig("jump", 22, "alice"))
+        self.window._session = jump
+        self.window.worker_browser.set_aliases(["cft02", "cft03"])
+        self.window.worker_browser.set_probe_statuses({"cft02": ("reachable", ""), "cft03": ("unreachable", "")})
+        self.window._sync_terminal_nodes()
+        with patch("nodebridge.window.ResourceMonitor") as factory:
+            monitor = factory.return_value
+            monitor.cancel.is_set.return_value = False
+            self.window._refresh_resource_monitor()
+            targets = monitor.set_targets.call_args.args[0]
+            self.assertEqual(targets, {f"primary:{id(jump)}": None, "worker:cft02": "cft02"})
+            tree = self.window.terminal_workspace.node_tree
+            item = next(tree.topLevelItem(i) for i in range(tree.topLevelItemCount())
+                        if tree.topLevelItem(i).text(0) == "cft02")
+            self.window._resource_result(monitor, jump, ("worker:cft02", 25, Sample(1, 0, 1024**3, 512*1024**2, "boot"), ""))
+            self.assertEqual(item.text(3), "25.0%")
+            self.assertIn("50%", item.text(4))
+            monitor.cancel.is_set.return_value = True
+            self.window._resource_result(monitor, jump, ("worker:cft02", None, None, "stale"))
+            self.assertEqual(item.text(3), "25.0%")
+            self.window._resource_monitor = None
+
     def test_probe_candidates_updates_file_node_status(self):
         jump = Mock(config=NodeConfig("jump", 22, "alice"))
         helper = Mock()
@@ -1204,6 +1302,34 @@ class WindowTests(unittest.TestCase):
         self.window._set_node_probe_statuses({"cft03": ("unreachable", "旧的结果")}, observed_at)
         self.assertEqual(browser._probe_status["cft03"][0], "reachable")
         self.assertEqual(self.window.terminal_workspace._node_statuses["worker:cft03"][0], "reachable")
+
+    def test_probe_status_updates_preserve_node_scroll_selection_and_checks(self):
+        browser = self.window.worker_browser
+        aliases = [f"cft{i:02d}" for i in range(1, 61)]
+        browser.set_aliases(aliases)
+        terminal = self.window.terminal_workspace
+        terminal.set_nodes([(f"worker:{alias}", alias) for alias in aliases])
+        for tree, check_column in ((browser.nodes, 0), (terminal.node_tree, 2)):
+            tree.setFixedHeight(180)
+            tree.show()
+            first = tree.topLevelItem(0)
+            tree.setCurrentItem(first)
+            first.setCheckState(check_column, Qt.CheckState.Checked)
+            first.setExpanded(False)
+            tree.doItemsLayout()
+            self.app.processEvents()
+            bar = tree.verticalScrollBar()
+            self.assertGreater(bar.maximum(), 0)
+            bar.setValue(bar.maximum() // 2)
+            position = bar.value()
+            for state in ("unreachable", "reachable"):
+                self.window._set_node_probe_statuses({"cft01": (state, "test")})
+                self.app.processEvents()
+                self.assertEqual(bar.value(), position)
+                self.assertIs(tree.topLevelItem(0), first)
+                self.assertIs(tree.currentItem(), first)
+                self.assertEqual(first.checkState(check_column), Qt.CheckState.Checked)
+                self.assertFalse(first.isExpanded())
 
     def test_probe_updates_each_node_before_slow_node_finishes(self):
         self.window._session = Mock(config=NodeConfig("jump", 22, "alice"))
@@ -1348,6 +1474,9 @@ class WindowTests(unittest.TestCase):
             self.window._workers[alias] = worker
         browser._check_all(True)
 
+        for target in self.window._workers.values():
+            target.sftp.stat.return_value = SimpleNamespace(st_mode=stat.S_IFDIR | 0o755)
+
         with patch.object(self.window, "_choose_worker_scope", return_value=["node02", "node03"]), \
              patch("nodebridge.window.copy_local_to_remote", return_value=CopyResult(0, 1, 5)) as copy:
             browser.table.localPathsDropped.emit(["C:/temp/project"], "/shared/output")
@@ -1400,6 +1529,9 @@ class WindowTests(unittest.TestCase):
         for alias in ("node02", "node03"):
             browser.set_connection(alias, listing)
 
+        for target in self.window._workers.values():
+            target.sftp.stat.return_value = SimpleNamespace(st_mode=stat.S_IFDIR | 0o755)
+
         with (patch.object(self.window, "_choose_worker_scope", return_value=["node02", "node03"]),
               patch("nodebridge.window.copy_local_to_remote", return_value=CopyResult(1, 0, 4)) as copy):
             browser.table.localPathsDropped.emit(["C:/source/a.txt"], "/shared")
@@ -1443,6 +1575,9 @@ class WindowTests(unittest.TestCase):
         helper = Mock()
         helper.list_directory.return_value = DirectoryListing("/shared", ())
         jump.open_sftp_peer.return_value = helper
+
+        for target in self.window._workers.values():
+            target.sftp.stat.return_value = SimpleNamespace(st_mode=stat.S_IFDIR | 0o755)
 
         with patch("nodebridge.window.copy_remote_between_sessions", return_value=CopyResult(1, 0, 5)) as copy:
             browser.table.remotePathsDropped.emit(str(id(jump)), ["/shared/input.py"], "/shared/output")
@@ -1700,6 +1835,9 @@ class WindowTests(unittest.TestCase):
             dialog.move.setChecked(True)
             return 1
 
+        for target in self.window._workers.values():
+            target.sftp.stat.return_value = SimpleNamespace(st_mode=stat.S_IFDIR | 0o755)
+
         with patch.object(BatchDialog, "exec", new=accept_move), \
              patch("nodebridge.window.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes), \
              patch("nodebridge.window.source_snapshot", return_value={"source": (0, 5, 1)}), \
@@ -1736,6 +1874,9 @@ class WindowTests(unittest.TestCase):
         def accept_move(dialog):
             dialog.move.setChecked(True)
             return 1
+
+        for target in self.window._workers.values():
+            target.sftp.stat.return_value = SimpleNamespace(st_mode=stat.S_IFDIR | 0o755)
 
         with patch.object(BatchDialog, "exec", new=accept_move), \
              patch("nodebridge.window.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes), \
@@ -2011,6 +2152,40 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(decisions, [ConflictAction.SKIP, ConflictAction.SKIP])
         dialog.assert_called_once_with()
         self.assertIn("跳过 2 个", self.window.status.text())
+
+    def test_startup_connect_uses_saved_site_and_respects_cancel(self):
+        from dataclasses import replace
+        from nodebridge.sites import SiteStore
+        store = SiteStore(Path(self.settings_dir.name) / "startup-sites.json")
+        self.window._site_store = store
+        site = replace(Site.create("startup"), host="example.invalid", username="alice",
+                       password="test-password", auto_connect=True)
+        store.save([site])
+        with patch.object(self.window, "_start_connection") as connect:
+            self.window.connect_startup_site()
+            connect.assert_called_once_with(NodeConfig("example.invalid", 22, "alice", None), "test-password", None)
+        store.save([site], mode="master", master_password="test-master")
+        self.window._site_store = SiteStore(store.path)
+        with patch("nodebridge.window.QInputDialog.getText", return_value=("", False)), \
+                patch.object(self.window, "_start_connection") as connect:
+            self.window.connect_startup_site()
+            connect.assert_not_called()
+        with patch("nodebridge.window.QInputDialog.getText", return_value=("test-master", True)), \
+                patch.object(self.window, "_start_connection") as connect:
+            self.window.connect_startup_site()
+            connect.assert_called_once()
+        store.save([site], mode="none")
+        self.window._site_store = SiteStore(store.path)
+        with patch("nodebridge.window.QInputDialog.getText", return_value=("", False)), \
+                patch.object(self.window, "_start_connection") as connect:
+            self.window.connect_startup_site()
+            connect.assert_not_called()
+        store.save([replace(site, auto_connect=False)])
+        with patch("nodebridge.window.QInputDialog.getText") as prompt, \
+                patch.object(self.window, "_start_connection") as connect:
+            self.window.connect_startup_site()
+            prompt.assert_not_called()
+            connect.assert_not_called()
 
     def test_saved_site_can_start_remote_connection(self):
         class FakeSession:

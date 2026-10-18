@@ -251,12 +251,30 @@ class WorkerBrowser(QWidget):
         self.summary.setText(f"发现 {len(self._aliases)} 个候选别名；已连接 {len(self._connected)} 个。")
 
     def set_probe_status(self, alias: str, state: str, detail: str = "") -> None:
-        self._probe_status[alias] = (state, detail)
-        self.set_aliases([alias])
+        self.set_probe_statuses({alias: (state, detail)})
 
     def set_probe_statuses(self, statuses: dict[str, tuple[str, str]]) -> None:
         self._probe_status.update(statuses)
-        self.set_aliases(list(statuses))
+        if any(alias not in self._aliases for alias in statuses):
+            self.set_aliases(list(statuses))
+            return
+        for index in range(self.nodes.topLevelItemCount()):
+            item = self.nodes.topLevelItem(index)
+            alias = item.text(0)
+            if alias not in statuses:
+                continue
+            state, detail = statuses[alias]
+            connected = alias in self._connected
+            label = {
+                "checking": "… 检测中", "reachable": "○ 可连接",
+                "unreachable": "○ 不可连接", "untrusted": "○ 主机密钥待核验",
+                "auth": "○ 认证失败", "error": "○ 检测失败",
+            }.get(state, "○ 未检测")
+            item.setText(1, "● 已连接" if connected else label)
+            failed = not connected and state in {"unreachable", "untrusted", "auth", "error"}
+            for column in (0, 1):
+                item.setToolTip(column, "" if connected else detail)
+                item.setForeground(column, QBrush(QColor("#888888")) if failed else QBrush())
 
     def checked_aliases(self) -> list[str]:
         return [

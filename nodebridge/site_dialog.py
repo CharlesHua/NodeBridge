@@ -7,6 +7,7 @@ from dataclasses import replace
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
+    QCheckBox,
     QDialog,
     QFormLayout,
     QHBoxLayout,
@@ -107,6 +108,9 @@ class SiteManagerDialog(QDialog):
         form.addRow("用户", self.user_edit)
         form.addRow("私钥路径（可选）", self.key_edit)
         form.addRow("密码", self.password_edit)
+        self.auto_connect = QCheckBox("打开软件时自动连接此站点")
+        self.auto_connect.setToolTip("只能选择一个启动站点；选择此站点将替换原选择。")
+        form.addRow("启动连接", self.auto_connect)
         right_layout.addLayout(form)
         password_options = QHBoxLayout()
         self.password_mode = QComboBox()
@@ -178,7 +182,7 @@ class SiteManagerDialog(QDialog):
     def _set_form_enabled(self, enabled: bool) -> None:
         for widget in (
             self.name_edit, self.host_edit, self.port_edit,
-            self.user_edit, self.key_edit, self.password_edit,
+            self.user_edit, self.key_edit, self.password_edit, self.auto_connect,
         ):
             widget.setEnabled(enabled)
 
@@ -195,8 +199,12 @@ class SiteManagerDialog(QDialog):
                     username=self.user_edit.text().strip(),
                     key_file=self.key_edit.text().strip(),
                     password=self.password_edit.text(),
+                    auto_connect=self.auto_connect.isChecked(),
                 )
                 self.sites[index] = updated
+                if updated.auto_connect:
+                    self.sites = [other if other.id == updated.id else replace(other, auto_connect=False)
+                                  for other in self.sites]
                 self.site_list.item(index).setText(updated.name)
                 break
 
@@ -215,6 +223,7 @@ class SiteManagerDialog(QDialog):
         self.user_edit.setText(site.username)
         self.key_edit.setText(site.key_file)
         self.password_edit.setText(site.password)
+        self.auto_connect.setChecked(site.auto_connect)
         self._set_form_enabled(True)
 
     def _new_site(self) -> None:
@@ -231,7 +240,7 @@ class SiteManagerDialog(QDialog):
             return
         self._commit_form()
         original = self.sites[row]
-        clone = replace(original, id=Site.create().id, name=f"{original.name} 副本")
+        clone = replace(original, id=Site.create().id, name=f"{original.name} 副本", auto_connect=False)
         self.sites.append(clone)
         self.site_list.addItem(clone.name)
         self.site_list.setCurrentRow(len(self.sites) - 1)

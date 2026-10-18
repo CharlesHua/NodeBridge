@@ -84,6 +84,40 @@ def _local_stat(path: Path):
         return None
 
 
+def ensure_remote_destination(session, path: str, confirm: Callable[[list[str]], bool]) -> bool:
+    """Create missing destination ancestors only after explicit approval."""
+    if not path.startswith("/"):
+        raise ValueError("远程目标目录必须是绝对路径")
+    path = posixpath.normpath(path)
+    missing = []
+    candidate = path
+    while True:
+        try:
+            info = session.sftp.stat(candidate)
+        except OSError as exc:
+            if not (isinstance(exc, FileNotFoundError) or exc.errno == errno.ENOENT):
+                raise
+            if candidate == "/":
+                raise
+            missing.append(candidate)
+            candidate = posixpath.dirname(candidate) or "/"
+        else:
+            if not stat.S_ISDIR(info.st_mode or 0):
+                raise NotADirectoryError(candidate)
+            break
+    missing.reverse()
+    if missing and not confirm(missing):
+        return False
+    for directory in missing:
+        try:
+            session.sftp.mkdir(directory)
+        except OSError:
+            # Another task may have created it since the check. Never replace files.
+            if not stat.S_ISDIR(session.sftp.stat(directory).st_mode or 0):
+                raise
+    return True
+
+
 def _decision(info: ConflictInfo, resolver: ResolveConflict | None) -> ConflictAction:
     if resolver is None:
         raise FileExistsError(f"目标文件已存在：{info.target_path}")

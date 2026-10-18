@@ -2,6 +2,10 @@
 
 ## TODO / 待办
 
+Validate the Linux CPU/memory monitor on the real cluster, especially 50-node polling time and SSH login overhead. Consider configurable refresh intervals and a monitoring toggle after measuring load; Linux `/proc` support is currently required.
+
+在真实集群验证 Linux CPU／内存监控，重点测量 50 节点轮询耗时和 SSH 登录开销。根据负载再考虑可配置刷新间隔及监控开关；目前要求节点支持 Linux `/proc`。
+
 Design a persistent Task Workspace before implementing it. The proposed UI is a third tab beside Files and Terminal, plus a current-task selector shared across views; this layout is not yet confirmed. A named task should remember a direct site, selected indirect nodes, one common absolute working path with optional per-node overrides, local inputs, and task-first result destinations. Loading a task would fill the current Files view; connections and file operations would still require explicit user action. Settle how task snapshots and result manifests relate to later distribution, collection, verification, and cleanup before adding one-click orchestration. The owner deferred deciding whether task membership changes the default scope of batch file actions until Task Workspace implementation.
 
 先设计可保存的“任务工作区”，再实施。建议界面与“文件”“终端”并列为第三个标签页，并在各视图共用当前任务选择器；此布局尚未最终确认。按任务名称记录直连站点、间接节点、共同绝对工作路径及可选的逐节点覆盖、本地输入和以任务为先的结果位置。加载任务时填充现有文件界面；连接和文件操作仍由用户明确触发。实施一键流程前，先确定任务快照与结果清单如何关联后续的分发、汇集、核对及清理。任务成员是否改变批量文件操作的默认范围，项目所有者决定留待实现任务工作区时再讨论。

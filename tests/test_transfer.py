@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from nodebridge.transfer import (
+    ensure_remote_destination,
     ConflictAction,
     copy_local_to_local,
     copy_local_to_remote,
@@ -53,6 +54,32 @@ class DiskBackedSFTP:
 
 
 class TransferTests(unittest.TestCase):
+    def test_missing_destination_requires_approval_and_creates_ancestors(self):
+        session = SimpleNamespace(sftp=self.sftp)
+        calls = []
+        self.assertTrue(ensure_remote_destination(session, "/", lambda paths: self.fail("existing path")))
+        self.assertFalse(ensure_remote_destination(session, "/task/result", lambda paths: False))
+        self.assertFalse((self.remote / "task").exists())
+        def approve(paths):
+            calls.append(paths)
+            return True
+        self.assertTrue(ensure_remote_destination(session, "/task/result", approve))
+        self.assertEqual(calls, [["/task", "/task/result"]])
+        self.assertTrue((self.remote / "task/result").is_dir())
+        self.assertTrue(ensure_remote_destination(session, "/task/result", lambda paths: self.fail("already exists")))
+
+    def test_missing_destination_rejects_file_and_permission_errors(self):
+        from unittest.mock import Mock
+        session = SimpleNamespace(sftp=self.sftp)
+        (self.remote / "file").write_text("data")
+        with self.assertRaises(NotADirectoryError):
+            ensure_remote_destination(session, "/file/child", lambda paths: self.fail("file conflict"))
+        session = SimpleNamespace(sftp=Mock())
+        session.sftp.stat.side_effect = PermissionError(13, "denied")
+        with self.assertRaises(PermissionError):
+            ensure_remote_destination(session, "/private/child", lambda paths: self.fail("permission"))
+        session.sftp.mkdir.assert_not_called()
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)

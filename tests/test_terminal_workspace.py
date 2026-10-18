@@ -6,7 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QCheckBox, QWidget
+from PySide6.QtWidgets import QApplication, QCheckBox, QSplitter, QWidget
 
 from nodebridge.terminal_workspace import TerminalWorkspace
 
@@ -21,6 +21,24 @@ class TerminalWorkspaceTests(unittest.TestCase):
 
     def tearDown(self):
         self.workspace.close()
+
+    def test_command_helpers_wrap_when_splitter_narrows_terminal(self):
+        workspace = self.workspace
+        workspace.resize(1400, 850)
+        workspace.show()
+        splitter = workspace.findChild(QSplitter)
+        splitter.setSizes([300, 1100])
+        self.app.processEvents()
+        wide_rows = len({button.y() for button in workspace.command_helpers})
+        splitter.setSizes([950, 450])
+        self.app.processEvents()
+        narrow_rows = len({button.y() for button in workspace.command_helpers})
+        self.assertGreater(narrow_rows, wide_rows)
+        for button in workspace.command_helpers:
+            self.assertTrue(workspace.command_toolbar.rect().contains(button.geometry()))
+        splitter.setSizes([300, 1100])
+        self.app.processEvents()
+        self.assertEqual(len({button.y() for button in workspace.command_helpers}), wide_rows)
 
     def test_multiline_broadcast_shift_enter_edits_enter_sends(self):
         workspace = self.workspace
@@ -387,7 +405,7 @@ class TerminalWorkspaceTests(unittest.TestCase):
         workspace.broadcastRequested.connect(lambda *args: sent.append(args))
         workspace.broadcast_input.setText("prefix suffix")
         workspace.broadcast_input.setCursorPosition(len("prefix "))
-        self.assertEqual(workspace.command_toolbar.orientation(), Qt.Orientation.Horizontal)
+        self.assertTrue(workspace.command_layout.hasHeightForWidth())
         self.assertEqual([button.text() for button in workspace.command_helpers], [
             "cd（进入目录）", "mkdir（新建目录）", "rm -r（删除目录及子目录）",
             "cd ..（退回上级）", "ls（列出文件）", "ls -a（含隐藏）",

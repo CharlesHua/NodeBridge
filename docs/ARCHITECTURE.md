@@ -6,6 +6,14 @@ This document describes the current implementation and explicitly labeled future
 
 ## Components / 组件
 
+Windows native fault tracing is disabled by default after crash reports localized access violations to CPython's traceback-dump code. `NODEBRIDGE_NATIVE_TRACE=1` enables current-thread-only tracing for diagnosis; other platforms keep all-thread traces. Python, thread and Qt error logging remains enabled. Native-trace descriptions below are conditional on this setting.
+
+崩溃报告将访问冲突定位到 CPython 栈输出代码后，Windows 默认关闭自动原生异常捕获。诊断时可设置 `NODEBRIDGE_NATIVE_TRACE=1` 只捕获当前线程；其他平台保留全线程捕获。Python、线程及 Qt 错误日志保持启用。下文原生栈记录说明以此配置为前提。
+
+`resource_monitor.py` owns a dedicated authenticated jump connection and a two-worker query pool, separate from browsing, transfers, probes, hashes and terminal PTYs. It reads Linux `/proc/stat`, `/proc/meminfo` and boot ID through short exec channels; indirect commands run strict, passwordless OpenSSH on the jump host. CPU uses deltas of the first eight aggregate counters (guest counters are already included), treating idle plus iowait as idle; memory uses `MemTotal - MemAvailable`. See the [Linux proc documentation](https://www.kernel.org/doc/html/v6.8/filesystems/proc.html). Monitoring rounds never overlap; each finishes before a five-second wait. Errors clear displayed data and delay that node for 30 seconds. GUI signals update existing rows, reject cancelled/previous-site results, and show sample timestamps. Disconnect/exit signals cancellation and waits asynchronously for thread cleanup; SSH connection/open-channel timeouts can delay shutdown. This is host-level Linux telemetry, not a scheduler allocation or per-user measurement, and still needs cluster load validation.
+
+`resource_monitor.py` 持有独立认证的跳板连接及两个工作线程的查询池，与浏览、传输、探测、哈希及终端 PTY 分开。短时 exec 通道读取 Linux `/proc/stat`、`/proc/meminfo` 和启动标识；间接查询通过跳板上的 OpenSSH 严格校验主机密钥并免密执行。CPU 取前八项整机计数器差值（guest 已包含），idle 加 iowait 视为空闲；内存按 `MemTotal - MemAvailable` 计算，依据见 [Linux proc 文档](https://www.kernel.org/doc/html/v6.8/filesystems/proc.html)。各轮不重叠，结束后等待五秒；失败清除显示值并对该节点延迟 30 秒重试。GUI 信号原位更新行，拒绝取消或旧站点结果，提示采样时间。断开／退出发出取消信号并异步等待线程释放；SSH 建连／开通道超时可能延迟退出。这是整机 Linux 资源数据，不是调度器分配量或单用户用量，仍需验证集群负载。
+
 For the underlying concepts and maintenance rules, see [SSH layers](#ssh-layers), [transfer isolation](#transfer-isolation), [terminal pipeline](#terminal-pipeline), and [Qt layout and tasks](#qt-layout). These describe the current source implementation; rebuilding is required to put source changes into an existing portable executable.
 
 底层概念及维护原则见本文的 [SSH 分层](#ssh-layers)、[传输隔离](#transfer-isolation)、[终端数据通路](#terminal-pipeline)和 [Qt 布局与任务](#qt-layout)。这些内容描述当前源码实现；已有绿色版可执行程序须重新构建才会包含源码改动。

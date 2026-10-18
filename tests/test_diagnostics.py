@@ -34,6 +34,10 @@ class DiagnosticsTests(unittest.TestCase):
                 self.assertIn("test warning", content)
                 self.assertIn("test Qt warning", content)
                 self.assertIn("test uncaught failure", content)
+                if sys.platform == "win32":
+                    self.assertFalse(faulthandler.is_enabled())
+                    self.assertIn("Windows native traceback handler disabled",
+                                  (Path(folder) / "crash.log").read_text(encoding="utf-8"))
             finally:
                 sys.excepthook = old_sys_hook
                 threading.excepthook = old_thread_hook
