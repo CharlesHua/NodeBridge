@@ -9,9 +9,40 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from nodebridge.remote import NodeConfig, RemoteSession, TransferSessionPool, UnknownHostKeyError, VerifyHostKey
+from nodebridge.discovery_settings import DiscoverySettings
 
 
 class RemoteSessionTests(unittest.TestCase):
+    def test_discovery_reads_custom_hosts_without_ssh_config(self):
+        sftp = Mock()
+        sftp.normalize.return_value = "/home/alice"
+        sftp.open.return_value = io.BytesIO(b"192.0.2.2 node02\n192.0.2.3 node03\n")
+        config = NodeConfig("jump", 22, "alice", discovery=DiscoverySettings(True, "~/inventory/hosts", False))
+        session = RemoteSession(config, Mock(), sftp)
+        with patch.object(session, "_exec_text", return_value="node01\n"):
+            self.assertEqual(session.discover_work_nodes().aliases, ("node02", "node03"))
+        sftp.open.assert_called_once_with("/home/alice/inventory/hosts", "r")
+
+    def test_discovery_disabled_sources_do_not_read_or_guess_nodes(self):
+        sftp = Mock()
+        session = RemoteSession(NodeConfig("jump", 22, "alice", discovery=DiscoverySettings(False, ssh_enabled=False)), Mock(), sftp)
+        with patch.object(session, "_exec_text", return_value="node01\n") as execute:
+            self.assertEqual(session.discover_work_nodes().aliases, ())
+        sftp.open.assert_not_called()
+        execute.assert_called_once_with("hostname -s")
+
+    def test_custom_ssh_config_includes_and_empty_system_path(self):
+        files = {"/home/alice/custom/config": b"Include parts/*.conf\nHost alpha01\n",
+                 "/home/alice/custom/parts/nodes.conf": b"Host alpha02 alpha*\n"}
+        sftp = Mock()
+        sftp.normalize.return_value = "/home/alice"
+        sftp.open.side_effect = lambda path, mode: io.BytesIO(files[path])
+        sftp.listdir.return_value = ["nodes.conf"]
+        settings = DiscoverySettings(False, ssh_user_path="~/custom/config", ssh_system_path="")
+        session = RemoteSession(NodeConfig("jump", 22, "alice", discovery=settings), Mock(), sftp)
+        self.assertEqual(session.discover_ssh_aliases(), ["alpha01", "alpha02"])
+        self.assertEqual(sftp.open.call_count, 2)
+
     def test_transfer_pool_reuses_only_active_thread_connections(self):
         config = NodeConfig("jump.example", 22, "alice")
         hosts = []

@@ -22,6 +22,23 @@ class TerminalWorkspaceTests(unittest.TestCase):
     def tearDown(self):
         self.workspace.close()
 
+    def test_process_user_column_distinguishes_empty_and_unavailable(self):
+        from nodebridge.resource_monitor import Sample
+        workspace = self.workspace
+        workspace.set_nodes([("node1", "cft02")])
+        item = workspace.node_tree.topLevelItem(0)
+        sample = Sample(100, 50, 1024, 512, "boot", ("alice", "bob"))
+        workspace.set_resource_usage("node1", 50, sample)
+        self.assertEqual(item.text(5), "alice, bob")
+        self.assertTrue(item.textAlignment(3) & Qt.AlignmentFlag.AlignRight)
+        self.assertTrue(item.textAlignment(4) & Qt.AlignmentFlag.AlignRight)
+        self.assertIn("alice\nbob", item.toolTip(5))
+        workspace.set_resource_usage("node1", 50, Sample(100, 50, 1024, 512, "boot", ()))
+        self.assertEqual(item.text(5), "无")
+        workspace.set_resource_usage("node1", 50, Sample(100, 50, 1024, 512, "boot"))
+        self.assertEqual(item.text(5), "—")
+        self.assertEqual(item.text(3), "50.0%")
+
     def test_command_helpers_wrap_when_splitter_narrows_terminal(self):
         workspace = self.workspace
         workspace.resize(1400, 850)

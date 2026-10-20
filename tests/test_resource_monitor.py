@@ -3,13 +3,21 @@ import unittest
 from unittest.mock import Mock, patch
 from concurrent.futures import CancelledError
 
-from nodebridge.resource_monitor import Sample, parse_sample, cpu_percent, query_sample, ResourceMonitor
+from nodebridge.resource_monitor import Sample, parse_sample, cpu_percent, query_sample, ResourceMonitor, USERS_MARKER, USERS_ERROR
 
 
 TEXT = "cpu 100 0 30 800 20 5 5 40 99 0\nMemTotal: 1000 kB\nMemAvailable: 400 kB\nboot-1\n"
 
 
 class ResourceMonitorTests(unittest.TestCase):
+    def test_process_users_preserve_boot_and_deduplicate_names(self):
+        sample = parse_sample(TEXT + USERS_MARKER + "\nbob\nalice\nbob\n")
+        self.assertEqual(sample.boot, "boot-1")
+        self.assertEqual(sample.users, ("alice", "bob"))
+        self.assertEqual(parse_sample(TEXT + USERS_MARKER + "\n").users, ())
+        self.assertIsNone(parse_sample(TEXT + USERS_MARKER + "\n" + USERS_ERROR).users)
+        self.assertEqual(parse_sample(TEXT + USERS_MARKER + "\n" + USERS_ERROR).memory_used, 600 * 1024)
+
     def test_cpu_delta_memory_and_reboot(self):
         first = parse_sample(TEXT)
         self.assertEqual(first.total, 1000)  # Guest time already belongs to user/nice.

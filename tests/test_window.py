@@ -611,6 +611,46 @@ class WindowTests(unittest.TestCase):
         self.window._sync_terminal_nodes()
         self.assertEqual(terminal.node_tree.topLevelItemCount(), 1)
 
+    def test_interrupt_broadcast_confirms_and_sends_once_per_node_in_current_group(self):
+        terminal = self.window.terminal_workspace
+        terminal.set_nodes([("a", "cft02"), ("b", "cft03"), ("c", "cft04")])
+        group = terminal.create_group(["a", "b"])
+        first = terminal.add_terminal("a", group_id=group)
+        duplicate = terminal.add_terminal("a", group_id=group)
+        second = terminal.add_terminal("b", group_id=group)
+        terminal._groups[group].selected.add(duplicate)
+        other = terminal.create_group(["c"])
+        terminal.add_terminal("c", group_id=other)
+        terminal.group_selector.setCurrentIndex(terminal.group_selector.findData(group))
+        terminal.broadcast_input.setText("draft stays here")
+        with patch("nodebridge.window.QMessageBox.question", return_value=QMessageBox.StandardButton.No) as confirm, \
+                patch.object(self.window._terminal_manager, "send") as send:
+            terminal.interrupt_button.click()
+            send.assert_not_called()
+            self.assertEqual(confirm.call_args.args[-1], QMessageBox.StandardButton.No)
+        terminal.broadcast_input.clear()
+        self.assertTrue(terminal.interrupt_button.isEnabled())
+        with patch("nodebridge.window.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes), \
+                patch.object(self.window._terminal_manager, "send") as send, \
+                patch.object(terminal, "shell_ready", side_effect=AssertionError("must not query cwd")):
+            terminal.interrupt_button.click()
+            self.assertEqual(send.call_count, 2)
+            self.assertEqual({call.args for call in send.call_args_list}, {(first, b"\x03"), (second, b"\x03")})
+
+    def test_interrupt_broadcast_rechecks_targets_after_confirmation(self):
+        terminal = self.window.terminal_workspace
+        terminal.set_nodes([("a", "cft02")])
+        session_id = terminal.add_terminal("a")
+        def confirm(*args):
+            terminal.mark_terminal_closed(session_id)
+            return QMessageBox.StandardButton.Yes
+        with patch("nodebridge.window.QMessageBox.question", side_effect=confirm), \
+                patch("nodebridge.window.QMessageBox.warning") as warning, \
+                patch.object(self.window._terminal_manager, "send") as send:
+            terminal.interrupt_button.click()
+            send.assert_not_called()
+            warning.assert_called_once()
+
     def test_terminal_connect_sends_command_and_interrupt_and_can_close(self):
         channel = Mock()
         channel.recv_ready.return_value = False
@@ -968,6 +1008,10 @@ class WindowTests(unittest.TestCase):
 
         jump.discover_work_nodes.assert_called_once_with()
         self.assertIn("未找到", self.window.worker_browser.summary.text())
+        primary = self.window.terminal_workspace.node_tree.topLevelItem(0)
+        self.assertEqual(primary.text(0), "jump01")
+        self.assertIn("jump.example.invalid", primary.toolTip(0))
+        self.assertEqual(jump.config.host, "jump.example.invalid")
         message.assert_called_once()
 
     def test_worker_browser_merges_names_but_marks_different_sizes(self):
@@ -2155,15 +2199,17 @@ class WindowTests(unittest.TestCase):
 
     def test_startup_connect_uses_saved_site_and_respects_cancel(self):
         from dataclasses import replace
+        from nodebridge.discovery_settings import DiscoverySettings
         from nodebridge.sites import SiteStore
         store = SiteStore(Path(self.settings_dir.name) / "startup-sites.json")
         self.window._site_store = store
+        discovery = DiscoverySettings(True, "/cluster/hosts", False)
         site = replace(Site.create("startup"), host="example.invalid", username="alice",
-                       password="test-password", auto_connect=True)
+                       password="test-password", auto_connect=True, discovery=discovery)
         store.save([site])
         with patch.object(self.window, "_start_connection") as connect:
             self.window.connect_startup_site()
-            connect.assert_called_once_with(NodeConfig("example.invalid", 22, "alice", None), "test-password", None)
+            connect.assert_called_once_with(NodeConfig("example.invalid", 22, "alice", None, discovery), "test-password", None)
         store.save([site], mode="master", master_password="test-master")
         self.window._site_store = SiteStore(store.path)
         with patch("nodebridge.window.QInputDialog.getText", return_value=("", False)), \

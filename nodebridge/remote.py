@@ -13,9 +13,10 @@ import threading
 import time
 from concurrent.futures import CancelledError
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import paramiko
+from nodebridge.discovery_settings import DiscoverySettings
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,7 @@ class NodeConfig:
     port: int
     username: str
     key_file: str | None = None
+    discovery: DiscoverySettings = field(default_factory=DiscoverySettings)
 
 
 @dataclass(frozen=True)
@@ -75,6 +77,7 @@ class RemoteSession:
         root_client: paramiko.SSHClient | None = None,
     ):
         self.config = config
+        self.display_hostname: str | None = None
         self._client = client
         self._sftp = sftp
         self._tunnel = tunnel
@@ -268,7 +271,9 @@ class RemoteSession:
         The result is a list of candidates, not a reachability or trust check.
         Wildcard Host patterns cannot be enumerated.
         """
-        ssh_dir = posixpath.join(self.home(), ".ssh")
+        settings = self.config.discovery
+        if not settings.ssh_enabled:
+            return []
         seen_files: set[str] = set()
         aliases: set[str] = set()
 
@@ -313,9 +318,20 @@ class RemoteSession:
                             if fnmatch.fnmatchcase(filename, name):
                                 visit(posixpath.join(folder, filename), base_dir)
 
-        visit(posixpath.join(ssh_dir, "config"), ssh_dir)
-        visit("/etc/ssh/ssh_config", "/etc/ssh")
+        for configured_path in (settings.ssh_user_path, settings.ssh_system_path):
+            if configured_path.strip():
+                path = self._discovery_path(configured_path)
+                visit(path, posixpath.dirname(path))
         return sorted(aliases, key=str.casefold)
+
+    def _discovery_path(self, path: str) -> str:
+        """Resolve remote paths without interpreting them as Shell code."""
+        path = path.strip()
+        if path.startswith("~/"):
+            return posixpath.join(self.home(), path[2:])
+        if not path.startswith("/"):
+            raise ValueError("节点发现路径须为远程绝对路径或以 ~/ 开头。")
+        return posixpath.normpath(path)
 
     def _exec_text(self, command: str, timeout: int = 10) -> str:
         if self._client is None:
@@ -334,13 +350,16 @@ class RemoteSession:
         DNS/hosts matches are candidates only; the SSH connection verifies each
         target's host key and authentication separately.
         """
-        config_aliases = self.discover_ssh_aliases()
+        settings = self.config.discovery
+        config_aliases = self.discover_ssh_aliases() if settings.ssh_enabled else []
         hostname = self._exec_text("hostname -s").strip().splitlines()
         short_name = hostname[0].strip() if hostname else None
         numbered: set[str] = set()
         try:
-            with self._sftp.open("/etc/hosts", "r") as stream:
-                raw = stream.read(1024 * 1024)
+            raw = b""
+            if settings.hosts_enabled and settings.hosts_path.strip():
+                with self._sftp.open(self._discovery_path(settings.hosts_path), "r") as stream:
+                    raw = stream.read(1024 * 1024)
             hosts_text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw
         except OSError:
             hosts_text = ""
@@ -356,7 +375,7 @@ class RemoteSession:
         # If the hosts file has no numbered inventory, try names sharing the
         # jump host's prefix. A resolver cannot enumerate arbitrary DNS names.
         match = re.fullmatch(r"([A-Za-z][A-Za-z0-9._-]*?)([0-9]{1,3})", short_name or "")
-        if not numbered and match:
+        if settings.hosts_enabled and settings.hosts_path.strip() and not numbered and match:
             prefix, digits = match.groups()
             width = len(digits)
             maximum = min(99, max(40, int(digits) + 40))

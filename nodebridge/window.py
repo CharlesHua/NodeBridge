@@ -379,6 +379,7 @@ class MainWindow(QMainWindow):
         self.terminal_workspace.inputRequested.connect(self._send_terminal_input)
         self.terminal_workspace.resizeRequested.connect(self._resize_terminal)
         self.terminal_workspace.broadcastRequested.connect(self._start_broadcast)
+        self.terminal_workspace.interruptRequested.connect(self._interrupt_broadcast)
         self._terminal_manager.outputReady.connect(self._terminal_output)
         self._terminal_manager.terminalClosed.connect(self._terminal_closed)
         self._terminal_manager.inputFailed.connect(self._terminal_input_failed)
@@ -524,12 +525,16 @@ class MainWindow(QMainWindow):
 
     def _terminal_sources(self) -> dict[str, tuple[str, RemoteSession]]:
         sources = {}
+        def display_name(session, fallback):
+            name = getattr(session, "display_hostname", None)
+            return name if isinstance(name, str) and name else fallback
+
         for session, _listing in self._parents:
-            sources[f"primary:{id(session)}"] = (session.config.host, session)
+            sources[f"primary:{id(session)}"] = (display_name(session, session.config.host), session)
         if self._session is not None:
             host = getattr(getattr(self._session, "config", None), "host", None)
             sources[f"primary:{id(self._session)}"] = (
-                host or self.host.text().strip() or "当前站点", self._session,
+                display_name(self._session, host or self.host.text().strip() or "当前站点"), self._session,
             )
         sources.update((f"worker:{alias}", (alias, session)) for alias, session in self._workers.items())
         return sources
@@ -595,6 +600,11 @@ class MainWindow(QMainWindow):
             nodes.update((f"worker:{alias}", alias) for alias in self.worker_browser.known_aliases())
         self._terminal_manager.retain_nodes(set(nodes))
         self.terminal_workspace.set_nodes(list(nodes.items()))
+        self.terminal_workspace.set_node_addresses({
+            node_id: address for node_id, (_label, session) in sources.items()
+            if node_id.startswith("primary:")
+            and isinstance(address := getattr(getattr(session, "config", None), "host", None), str)
+        })
         self.terminal_workspace.set_node_statuses({
             f"worker:{alias}": status for alias, status in self.worker_browser._probe_status.items()
         })
@@ -858,6 +868,49 @@ class MainWindow(QMainWindow):
             self._terminal_manager.send(session_id, data)
         except ConnectionError as exc:
             self.status.setText(str(exc))
+
+    def _interrupt_broadcast(self, group_id: str, targets: dict[str, str]) -> None:
+        workspace = self.terminal_workspace
+        targets = dict(targets)
+        if self._job is not None or self._broadcast_check is not None:
+            return
+        if not workspace.valid_broadcast(group_id, targets):
+            return
+        labels = [workspace.node_label(node_id) for node_id in targets]
+        group_name = workspace.group_name(group_id)
+        answer = QMessageBox.question(
+            self, "确认广播中断",
+            f"向 {group_name} 中勾选的 {len(targets)} 个节点发送 Ctrl+C？\n"
+            f"目标：{compact_node_aliases(labels)}\n\n"
+            "这会请求中断各终端当前的前台程序，可能使正在进行的工作提前结束。"
+            "每个节点仅发送一次，程序是否停止取决于远端程序是否响应。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        if (self._job is not None or self._broadcast_check is not None
+                or not workspace.valid_broadcast(group_id, targets)
+                or workspace.broadcast_targets() != targets):
+            QMessageBox.warning(self, "中断未发送", "终端组或目标状态已变化，请重新选择后再试。")
+            return
+        sent, errors = [], []
+        for node_id, session_id in targets.items():
+            try:
+                self._terminal_manager.send(session_id, b"\x03")
+                sent.append(workspace.node_label(node_id))
+            except ConnectionError as exc:
+                errors.append(f"{workspace.node_label(node_id)}：{exc}")
+        detail = f"Ctrl+C 已提交发送至 {len(sent)}/{len(targets)} 个终端；实际中断结果请查看终端输出。"
+        self.status.setText(detail)
+        self._record_activity(
+            "broadcast", f"广播中断（{group_name}）",
+            "部分发送" if errors and sent else "发送失败" if errors else "已提交发送",
+            detail, context={"targets": labels, "sent_nodes": sent, "errors": errors, "control": "Ctrl+C"},
+        )
+        if errors:
+            QMessageBox.warning(self, "中断发送失败", "\n".join(errors))
+        workspace.broadcast_input.setFocus()
 
     def _record_broadcast(self, state: PendingBroadcast, status: str,
                           detail: str = "", *, sent_nodes: list[str] | None = None,
@@ -1342,7 +1395,7 @@ class MainWindow(QMainWindow):
                 if not accepted:
                     return
             self._start_connection(
-                NodeConfig(site.host, site.port, site.username, site.key_file or None), password or None, None,
+                NodeConfig(site.host, site.port, site.username, site.key_file or None, site.discovery), password or None, None,
             )
         except (OSError, ValueError, KeyError, TypeError) as exc:
             QMessageBox.warning(self, "启动连接", f"无法自动连接站点：{exc}")
@@ -1365,7 +1418,7 @@ class MainWindow(QMainWindow):
         if self._session is not None and getattr(self._session, "_client", None) is None:
             QMessageBox.warning(self, "NodeBridge", "当前站点通过 SSH 别名连接；请用“SSH 别名中转”继续跳转。")
             return
-        config = NodeConfig(site.host, site.port, site.username, site.key_file or None)
+        config = NodeConfig(site.host, site.port, site.username, site.key_file or None, site.discovery)
         self._start_connection(config, dialog.connection_password, self._session)
 
     def _prompt_alias(self) -> None:
@@ -1423,9 +1476,11 @@ class MainWindow(QMainWindow):
                 self.status.setText("请等待当前任务结束后再发现节点。")
             return
 
-        self.worker_browser.summary.setText("正在读取 SSH 配置及 /etc/hosts 中的编号主机名…")
+        self.worker_browser.summary.setText("正在按当前站点的发现设置读取远程节点名单…")
 
         def success(result: NodeDiscovery) -> None:
+            if result.hostname:
+                jump.display_hostname = result.hostname
             self.worker_browser.set_aliases(list(result.aliases))
             self._sync_terminal_nodes()
             if result.aliases:

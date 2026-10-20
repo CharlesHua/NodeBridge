@@ -6,6 +6,34 @@ This file records user-visible changes. `Unreleased` describes work in the curre
 
 ## Unreleased / 未发布
 
+- Moved the confirmed interrupt button to the broadcast title row, leaving the command-entry row for typing and sending.
+
+- 中断按钮移到“广播命令”标题所在行，输入行保留命令输入和发送。
+
+- Added a confirmed “Interrupt (Ctrl+C)” broadcast button. It sends one ETX byte per selected node in the active group, without a newline or directory probe, rechecks targets after confirmation, and records submission and failures in the activity log.
+
+- 新增需二次确认的“中断（Ctrl+C）”广播按钮：仅向当前组勾选的节点各发送一次中断字符，不附加回车、不探测目录；确认后重新检查目标，日志记录提交和失败情况。
+
+- Clarified the site Host field as “IP or domain name”. The terminal node list prefers the server hostname returned during discovery and retains the connection address in its tooltip; terminal/group labels use that name too.
+
+- 站点“主机”字段明确为“IP 或域名”；终端节点列表优先显示发现时取得的服务器主机名，悬停仍可查看连接地址，相关终端／组名称同步使用该名称。
+
+- Keep memory text in the normal foreground color when selected and keep the separator close to the aligned capacity values.
+
+- 内存栏选中时保持正常文字颜色，缩小分隔点与对齐容量之间的多余空隙。
+
+- Right-align CPU and memory readings, align memory percentages and the amount's right edge with separate drawing regions using the normal UI font, and separate user names with a comma and space.
+
+- CPU 和内存数值右对齐，内存保留界面原字体，通过分区绘制对齐百分号及容量右侧边缘；多个用户名改用英文逗号加空格分隔。
+
+- Added a Users column beside terminal-node CPU/memory readings. The existing background sample also queries ordinary process owners, including users with detached jobs; hovering shows the full list. User-query failure leaves CPU/memory available.
+
+- 终端节点 CPU／内存旁新增“用户”列，随现有后台采样查询有进程的普通用户，包含运行脱离登录会话任务的用户；悬停显示完整名单。用户查询失败不影响 CPU／内存显示。
+
+- Site Manager now saves independent hosts-file and SSH-config discovery switches and remote paths per site. Existing sites keep the previous defaults; saved-site connections, including startup connections, use these settings.
+
+- 站点管理器可按站点保存 hosts 文件、SSH 配置两种发现来源的开关和远程路径。旧站点沿用原默认值；从站点管理器连接及启动自动连接均使用保存的设置。
+
 - Vertically center the common-command label with the buttons in its row.
 
 - “常用命令”文字与同行按钮垂直居中对齐。

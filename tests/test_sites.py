@@ -9,9 +9,31 @@ from PySide6.QtWidgets import QApplication
 
 from nodebridge.site_dialog import SiteManagerDialog
 from nodebridge.sites import LockedSiteStore, Site, SiteStore
+from nodebridge.discovery_settings import DiscoverySettings
 
 
 class SiteTests(unittest.TestCase):
+    def test_discovery_settings_edit_save_and_reopen_per_site(self):
+        from dataclasses import replace
+        with tempfile.TemporaryDirectory() as temporary:
+            store = SiteStore(Path(temporary) / "sites.json")
+            store.save([Site.create("first"), Site.create("second")])
+            dialog = SiteManagerDialog(store)
+            self.addCleanup(dialog.close)
+            dialog.hosts_path.setText("/cluster/hosts")
+            dialog.discover_ssh.setChecked(False)
+            dialog.ssh_user_path.setText("~/custom/ssh_config")
+            dialog.site_list.setCurrentRow(1)
+            self.assertEqual(dialog.hosts_path.text(), "/etc/hosts")
+            self.assertTrue(dialog.discover_ssh.isChecked())
+            self.assertTrue(dialog._persist())
+            saved = store.load()
+            self.assertEqual(saved[0].discovery, DiscoverySettings(True, "/cluster/hosts", False, "~/custom/ssh_config"))
+            self.assertEqual(saved[1].discovery, DiscoverySettings())
+            store.save([replace(saved[0], password="test")], mode="master", master_password="test")
+            store.reset_encrypted_passwords()
+            self.assertEqual(store.load()[0].discovery, saved[0].discovery)
+
     def test_startup_site_persists_and_selection_is_exclusive(self):
         from dataclasses import replace
         with tempfile.TemporaryDirectory() as temporary:

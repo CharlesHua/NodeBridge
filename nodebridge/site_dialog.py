@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from nodebridge.sites import LockedSiteStore, Site, SiteStore
+from nodebridge.discovery_settings import DiscoverySettings
 
 
 class SiteManagerDialog(QDialog):
@@ -33,7 +35,7 @@ class SiteManagerDialog(QDialog):
     ):
         super().__init__(parent)
         self.setWindowTitle("NodeBridge — 站点管理器")
-        self.resize(820, 500)
+        self.resize(900, 700)
         self.store = store
         try:
             self.sites = store.load()
@@ -103,7 +105,7 @@ class SiteManagerDialog(QDialog):
         self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
         form.addRow("站点名称", self.name_edit)
         form.addRow("协议", QLabel("SFTP - SSH File Transfer Protocol"))
-        form.addRow("主机", self.host_edit)
+        form.addRow("主机（IP 或域名）", self.host_edit)
         form.addRow("端口", self.port_edit)
         form.addRow("用户", self.user_edit)
         form.addRow("私钥路径（可选）", self.key_edit)
@@ -112,6 +114,25 @@ class SiteManagerDialog(QDialog):
         self.auto_connect.setToolTip("只能选择一个启动站点；选择此站点将替换原选择。")
         form.addRow("启动连接", self.auto_connect)
         right_layout.addLayout(form)
+        discovery_box = QGroupBox("间接节点发现（在直连服务器上读取）")
+        discovery_form = QFormLayout(discovery_box)
+        defaults = DiscoverySettings()
+        self.discover_hosts = QCheckBox("从远程 hosts 文件读取")
+        self.discover_ssh = QCheckBox("从远程 SSH 配置读取（含 Include）")
+        self.hosts_path = QLineEdit(defaults.hosts_path)
+        self.ssh_user_path = QLineEdit(defaults.ssh_user_path)
+        self.ssh_system_path = QLineEdit(defaults.ssh_system_path)
+        discovery_form.addRow(self.discover_hosts)
+        discovery_form.addRow("hosts 路径", self.hosts_path)
+        discovery_form.addRow(self.discover_ssh)
+        discovery_form.addRow("用户 SSH 配置", self.ssh_user_path)
+        discovery_form.addRow("系统 SSH 配置", self.ssh_system_path)
+        discovery_note = QLabel("路径为远程绝对路径或 ~/ 开头；SSH 配置路径可留空以忽略该项。保存后重新连接站点生效。")
+        discovery_note.setWordWrap(True)
+        discovery_form.addRow(discovery_note)
+        self.discover_hosts.toggled.connect(self._update_discovery_fields)
+        self.discover_ssh.toggled.connect(self._update_discovery_fields)
+        right_layout.addWidget(discovery_box)
         password_options = QHBoxLayout()
         self.password_mode = QComboBox()
         for label, mode in (("保存密码（明文）", "plain"), ("使用主密码加密", "master"), ("不保存密码", "none")):
@@ -183,8 +204,16 @@ class SiteManagerDialog(QDialog):
         for widget in (
             self.name_edit, self.host_edit, self.port_edit,
             self.user_edit, self.key_edit, self.password_edit, self.auto_connect,
+            self.discover_hosts, self.discover_ssh,
         ):
             widget.setEnabled(enabled)
+        self._update_discovery_fields()
+
+    def _update_discovery_fields(self) -> None:
+        self.hosts_path.setEnabled(self.discover_hosts.isEnabled() and self.discover_hosts.isChecked())
+        enabled = self.discover_ssh.isEnabled() and self.discover_ssh.isChecked()
+        self.ssh_user_path.setEnabled(enabled)
+        self.ssh_system_path.setEnabled(enabled)
 
     def _commit_form(self) -> None:
         if self._editing_id is None:
@@ -200,6 +229,11 @@ class SiteManagerDialog(QDialog):
                     key_file=self.key_edit.text().strip(),
                     password=self.password_edit.text(),
                     auto_connect=self.auto_connect.isChecked(),
+                    discovery=DiscoverySettings(
+                        self.discover_hosts.isChecked(), self.hosts_path.text().strip(),
+                        self.discover_ssh.isChecked(), self.ssh_user_path.text().strip(),
+                        self.ssh_system_path.text().strip(),
+                    ),
                 )
                 self.sites[index] = updated
                 if updated.auto_connect:
@@ -224,6 +258,11 @@ class SiteManagerDialog(QDialog):
         self.key_edit.setText(site.key_file)
         self.password_edit.setText(site.password)
         self.auto_connect.setChecked(site.auto_connect)
+        self.discover_hosts.setChecked(site.discovery.hosts_enabled)
+        self.hosts_path.setText(site.discovery.hosts_path)
+        self.discover_ssh.setChecked(site.discovery.ssh_enabled)
+        self.ssh_user_path.setText(site.discovery.ssh_user_path)
+        self.ssh_system_path.setText(site.discovery.ssh_system_path)
         self._set_form_enabled(True)
 
     def _new_site(self) -> None:
@@ -263,6 +302,22 @@ class SiteManagerDialog(QDialog):
 
     def _persist(self) -> bool:
         self._commit_form()
+        for site in self.sites:
+            settings = site.discovery
+            paths = []
+            if settings.hosts_enabled:
+                if not settings.hosts_path:
+                    QMessageBox.warning(self, "节点发现路径", f"站点“{site.name}”的 hosts 路径不能为空。")
+                    return False
+                paths.append(settings.hosts_path)
+            if settings.ssh_enabled:
+                paths.extend(path for path in (settings.ssh_user_path, settings.ssh_system_path) if path)
+                if not settings.ssh_user_path and not settings.ssh_system_path:
+                    QMessageBox.warning(self, "节点发现路径", f"站点“{site.name}”须至少填写一个 SSH 配置路径。")
+                    return False
+            if any(not path.startswith(("/", "~/")) for path in paths):
+                QMessageBox.warning(self, "节点发现路径", f"站点“{site.name}”须使用远程绝对路径或 ~/ 开头的路径。")
+                return False
         mode = self.password_mode.currentData()
         master_password = None
         if mode == "master" and (self.store.mode != "master" or self._change_master):

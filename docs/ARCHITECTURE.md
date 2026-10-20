@@ -1,5 +1,17 @@
 # Architecture / 架构
 
+Broadcast interruption uses a separate control path from command broadcast: after a default-No confirmation, revalidate the active group's selected live sessions and send only `b"\x03"` through `TerminalManager.send`, deduplicated per node. It does not inject a directory probe, newline, or a new combined-output round. Sending remains asynchronous; submission is logged separately from any claim that a remote program stopped.
+
+广播中断独立于普通命令广播：默认“否”的确认框通过后，再检查当前组勾选的活动会话，按节点去重，经 `TerminalManager.send` 仅发送 `b"\x03"`。不注入目录探测、换行或开启新的联合输出轮次。发送仍在后台完成，日志只记录提交，不声称远端程序已经停止。
+
+Resource sampling now includes effective process-owner names from `ps` in the same bounded SSH channel as CPU/memory. A marked section separates the user list from resource data, keeping the boot ID stable for CPU deltas. Names are deduplicated and filtered using the remote `UID_MIN` (default 1000), excluding UID 65534. Failure of the process query marks only users unavailable. This is an approximate ordinary-process-owner inventory, not a login list or proof of active computation; process visibility and account UID policies apply.
+
+资源采样现通过同一个受限 SSH 通道，在 CPU／内存之外用 `ps` 查询进程有效属主名。用户区段使用标记分隔，保证 CPU 差值使用的启动 ID 不受影响。名单去重，按远程 `UID_MIN`（默认 1000）筛选并排除 UID 65534；进程查询失败仅标记用户不可用。这是普通进程属主的近似名单，不等同于登录列表或正在计算的证明，受进程可见性及账号 UID 策略限制。
+
+`DiscoverySettings` is immutable per-site metadata, stored with the site and passed into `NodeConfig` for saved-site connections. Hosts and SSH-config sources have independent switches and editable remote paths. `RemoteSession` reads these files over SFTP, expands `~/` on the remote host, and follows SSH `Include` files. Discovery paths do not alter OpenSSH's actual connection configuration or system name resolution. The pre-existing numbered-host filter and name-resolution fallback remain; disabled sources are not read. Quick connections use default discovery settings.
+
+`DiscoverySettings` 是按站点保存的不可变元数据，从已保存站点连接时传入 `NodeConfig`。hosts 和 SSH 配置来源分别有开关及可编辑的远程路径。`RemoteSession` 通过 SFTP 读取，在远程主机上展开 `~/`，并继续读取 SSH `Include` 文件。发现路径不会更改 OpenSSH 实际连接配置或系统名称解析。既有编号主机名筛选及名称解析备用方式保留；关闭的来源不会读取。快速连接使用默认发现设置。
+
 This document describes the current implementation and explicitly labeled future architecture. The roadmap is in [TODO.md](TODO.md); [CURRENT_STATUS.md](CURRENT_STATUS.md) separates implemented and planned behavior.
 
 本文描述当前实现及明确标注的未来架构。路线图见 [TODO.md](TODO.md)；[CURRENT_STATUS.md](CURRENT_STATUS.md) 区分已实现与计划中的功能。

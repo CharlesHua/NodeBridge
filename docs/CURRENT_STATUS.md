@@ -1,5 +1,17 @@
 # Current status / 当前状态
 
+On 2026-10-20, experimental portable build `20261020-201040-5c863d` was rebuilt from the working tree. Its executable created its main window, accepted a normal close request and exited with code 0; the error log was empty. The 187.9 MiB archive passed ZIP integrity and user-data exclusion checks. This is a local build, not a published release or clean-machine/live-cluster acceptance test. Archive SHA-256: `88f737a286c8aa8f8a48e926e23c467a08ce9431e1d97875060c076824c7371c`.
+
+2026-10-20 从当前工作区重建试验性绿色版 `20261020-201040-5c863d`。EXE 成功创建主窗口、响应正常关闭并以代码 0 退出，错误日志为空。187.9 MiB 压缩包通过 ZIP 完整性及用户数据排除检查。本次是本机构建，不代表已公开发行，也不能代替干净机器或实际集群验收。压缩包 SHA-256：`88f737a286c8aa8f8a48e926e23c467a08ce9431e1d97875060c076824c7371c`。
+
+The terminal-node resource table now includes ordinary process owners in a Users column, refreshed in the existing background sample. Six focused local checks cover parsing, unavailable users, CPU data preservation, channel cleanup, and table updates. Live cluster validation of process visibility and packaged behavior remains pending.
+
+终端节点资源表新增“用户”列，随现有后台采样显示普通进程属主。6 项定向本地检查覆盖数据解析、用户不可用、CPU 数据保留、通道释放及表格更新；实际集群进程可见性及打包后的行为仍待验证。
+
+Site Manager now exposes per-site hosts and SSH-config discovery switches and paths, used on manual saved-site and startup connections. Legacy sites retain defaults; configuration persistence and source selection have local tests. Custom discovery paths only supply candidate names and do not change remote name resolution or OpenSSH connection rules. Live validation with custom server paths remains pending.
+
+站点管理器现提供按站点保存的 hosts／SSH 配置发现开关及路径，从保存站点手动连接和启动自动连接时生效。旧站点保留默认值，配置保存和来源选择已有本地测试。自定义发现路径仅提供候选名称，不改变远程名称解析或 OpenSSH 连接规则；自定义服务器路径仍待实机验证。
+
 Resource monitoring is lazy-started on the first Terminal-tab visit in each application run, not on initial site connection. After that visit, tab switching does not stop or duplicate polling.
 
 每次运行仅在首次进入终端页后启动资源监控，初次连接站点不会触发；启动后切换标签不会停止或重复轮询。

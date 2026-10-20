@@ -8,12 +8,13 @@ import json
 import os
 import sys
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from PySide6.QtCore import QStandardPaths
+from nodebridge.discovery_settings import DiscoverySettings
 
 
 class LockedSiteStore(ValueError):
@@ -30,6 +31,7 @@ class Site:
     key_file: str = ""
     password: str = ""
     auto_connect: bool = False
+    discovery: DiscoverySettings = field(default_factory=DiscoverySettings)
 
     @classmethod
     def create(cls, name: str = "新站点") -> "Site":
@@ -103,6 +105,7 @@ class SiteStore:
                 port=int(entry["port"]), username=str(entry["username"]),
                 key_file=str(entry.get("key_file", "")), password=password,
                 auto_connect=entry.get("auto_connect") is True,
+                discovery=DiscoverySettings.from_dict(entry.get("discovery")),
             ))
         return result
 
@@ -121,6 +124,8 @@ class SiteStore:
             id=str(entry["id"]), name=str(entry["name"]), host=str(entry["host"]),
             port=int(entry["port"]), username=str(entry["username"]),
             key_file=str(entry.get("key_file", "")),
+            auto_connect=entry.get("auto_connect") is True,
+            discovery=DiscoverySettings.from_dict(entry.get("discovery")),
         ) for entry in data["sites"]]
         self.save(sites, mode="none")
 

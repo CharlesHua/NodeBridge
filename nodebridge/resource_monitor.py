@@ -12,7 +12,22 @@ from PySide6.QtCore import QThread, Signal
 from nodebridge.remote import RemoteSession
 
 
-COMMAND = "LC_ALL=C; head -n 1 /proc/stat && cat /proc/meminfo && cat /proc/sys/kernel/random/boot_id"
+USERS_MARKER = "__NODEBRIDGE_PROCESS_USERS__"
+USERS_ERROR = "__NODEBRIDGE_USERS_UNAVAILABLE__"
+# Query effective process owners, not just interactive login sessions. UID_MIN
+# follows the host's ordinary-account convention; ps runs in the same channel.
+COMMAND = (
+    "LC_ALL=C; export LC_ALL; "
+    "head -n 1 /proc/stat && cat /proc/meminfo && cat /proc/sys/kernel/random/boot_id; "
+    "resource_status=$?; [ \"$resource_status\" -eq 0 ] || exit \"$resource_status\"; "
+    f"printf '\\n{USERS_MARKER}\\n'; "
+    "user_min=$(awk '$1 == \"UID_MIN\" { print $2; exit }' /etc/login.defs 2>/dev/null); "
+    "case $user_min in ''|*[!0-9]*) user_min=1000;; esac; "
+    "if process_users=$(ps -e -o uid= -o user:256= 2>/dev/null); then "
+    "printf '%s\\n' \"$process_users\" | "
+    "awk -v minimum=\"$user_min\" '$1 >= minimum && $1 != 65534 { print $2 }' | sort -u; "
+    f"else printf '{USERS_ERROR}\\n'; fi"
+)
 
 
 @dataclass(frozen=True)
@@ -22,10 +37,12 @@ class Sample:
     memory_total: int
     memory_used: int
     boot: str
+    users: tuple[str, ...] | None = None
 
 
 def parse_sample(text: str) -> Sample:
-    lines = text.strip().splitlines()
+    resources, marker, users_text = text.partition(USERS_MARKER)
+    lines = resources.strip().splitlines()
     cpu_line = next(line for line in lines if line.startswith("cpu "))
     cpu = [int(value) for value in cpu_line.split()[1:9]]
     memory = {}
@@ -38,7 +55,10 @@ def parse_sample(text: str) -> Sample:
     total, available = memory["MemTotal:"], memory["MemAvailable:"]
     if len(cpu) != 8 or min(cpu) < 0 or total <= 0 or not 0 <= available <= total:
         raise ValueError("无效的 Linux 资源数据")
-    return Sample(sum(cpu), cpu[3] + cpu[4], total, total - available, lines[-1])
+    users = None
+    if marker and USERS_ERROR not in users_text:
+        users = tuple(sorted(set(line.strip() for line in users_text.splitlines() if line.strip())))
+    return Sample(sum(cpu), cpu[3] + cpu[4], total, total - available, lines[-1], users)
 
 
 def cpu_percent(previous: Sample | None, current: Sample) -> float | None:

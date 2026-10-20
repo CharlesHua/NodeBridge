@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from nodebridge.node_check_tree import NodeCheckTree
+from nodebridge.resource_delegate import MemoryUsageDelegate
 from nodebridge.flow_layout import FlowLayout
 from nodebridge.command_dialog import DEFAULT_COMMANDS
 from nodebridge.remote_terminal_widget import RemoteTerminalWidget
@@ -195,12 +196,14 @@ class TerminalWorkspace(QWidget):
     inputRequested = Signal(str, bytes)
     resizeRequested = Signal(str, int, int)
     broadcastRequested = Signal(str, str, dict)
+    interruptRequested = Signal(str, dict)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._nodes: dict[str, str] = {}
         self._node_statuses: dict[str, tuple[str, str]] = {}
         self._resource_values = {}
+        self._node_addresses = {}
         self._sessions: dict[str, TerminalRecord] = {}
         self._groups: dict[str, TerminalGroup] = {}
         self._next_group = 1
@@ -235,12 +238,14 @@ class TerminalWorkspace(QWidget):
         self.node_tree = NodeCheckTree(check_column=2)
         self.node_tree.setObjectName("terminalNodes")
         self.node_tree.setAlternatingRowColors(True)
-        self.node_tree.setHeaderLabels(["节点", "状态", "批量选择", "CPU", "内存"])
+        self.node_tree.setHeaderLabels(["节点", "状态", "批量选择", "CPU", "内存", "用户"])
         self.node_tree.setColumnWidth(0, 125)
         self.node_tree.setColumnWidth(1, 75)
         self.node_tree.setColumnWidth(2, 80)
         self.node_tree.setColumnWidth(3, 70)
-        self.node_tree.setColumnWidth(4, 140)
+        self.node_tree.setColumnWidth(4, 190)
+        self.node_tree.setItemDelegateForColumn(4, MemoryUsageDelegate(self.node_tree))
+        self.node_tree.setColumnWidth(5, 150)
         self.node_tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.node_tree.itemClicked.connect(self._item_clicked)
         self.node_tree.itemChanged.connect(self._item_changed)
@@ -338,6 +343,11 @@ class TerminalWorkspace(QWidget):
         self.send_button.setObjectName("terminalAction")
         self.send_button.setEnabled(False)
         self.send_button.clicked.connect(self._request_broadcast)
+        self.interrupt_button = QPushButton("中断（Ctrl+C）")
+        self.interrupt_button.setEnabled(False)
+        self.interrupt_button.setToolTip("确认后向当前组勾选的终端发送 Ctrl+C，每个节点一次")
+        self.interrupt_button.clicked.connect(self._request_interrupt)
+        header.addWidget(self.interrupt_button)
         command_row.addWidget(self.broadcast_input, 1)
         command_row.addWidget(self.send_button)
         broadcast_layout.addLayout(command_row)
@@ -402,13 +412,19 @@ class TerminalWorkspace(QWidget):
     def set_resource_usage(self, node_id, cpu, sample, error=""):
         from datetime import datetime
         if sample is None:
-            values = ("—", "—", f"资源数据不可用：{error}")
+            values = ("—", "—", f"资源数据不可用：{error}", "—", f"用户数据不可用：{error}")
         else:
             cpu_text = "采样中" if cpu is None else f"{cpu:.1f}%"
             used, total = sample.memory_used / 1024**3, sample.memory_total / 1024**3
             values = (cpu_text, f"{100 * sample.memory_used / sample.memory_total:.0f}% · {used:.1f}/{total:.1f} GiB",
                       f"更新于 {datetime.now():%H:%M:%S}；整机 CPU（全部逻辑核合计归一为 100%）；"
                       "内存按 MemTotal − MemAvailable 计算。")
+            users = sample.users
+            users_text = ", ".join(users) if users else ("无" if users is not None else "—")
+            users_tooltip = ("有进程的普通用户（含当前用户）；按服务器 UID_MIN 筛选，排除 nobody。\n"
+                             "不等同于当前登录列表；权限限制可能导致名单不完整。\n" +
+                             ("\n".join(users) if users else ("未发现普通用户进程" if users is not None else "无法查询用户进程")))
+            values += (users_text, users_tooltip)
         self._resource_values[node_id] = values
         for index in range(self.node_tree.topLevelItemCount()):
             item = self.node_tree.topLevelItem(index)
@@ -417,10 +433,14 @@ class TerminalWorkspace(QWidget):
                 break
 
     def _paint_resources(self, item, node_id):
-        cpu, memory, tooltip = self._resource_values.get(node_id, ("—", "—", "尚未采集资源数据"))
+        cpu, memory, tooltip, users, users_tooltip = self._resource_values.get(
+            node_id, ("—", "—", "尚未采集资源数据", "—", "尚未采集用户数据"))
         for column, text in ((3, cpu), (4, memory)):
             item.setText(column, text)
             item.setToolTip(column, tooltip)
+            item.setTextAlignment(column, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        item.setText(5, users)
+        item.setToolTip(5, users_tooltip)
 
     def set_nodes(self, nodes: list[tuple[str, str]]) -> None:
         """Replace available nodes; node IDs are stable and labels are user facing."""
@@ -433,9 +453,19 @@ class TerminalWorkspace(QWidget):
         self._node_statuses = {key: value for key, value in self._node_statuses.items() if key in new_nodes}
         self._refresh_groups()
         self._rebuild_tree()
+        for node_id in new_nodes:
+            self._refresh_node_tab_titles(node_id)
 
     def has_node(self, node_id: str) -> bool:
         return node_id in self._nodes
+
+    def set_node_addresses(self, addresses):
+        self._node_addresses = dict(addresses)
+        for index in range(self.node_tree.topLevelItemCount()):
+            item = self.node_tree.topLevelItem(index)
+            kind, node_id = item.data(0, ITEM_ROLE)
+            if kind == "node" and node_id in self._node_addresses:
+                item.setToolTip(0, f"连接地址：{self._node_addresses[node_id]}")
 
     def create_group(self, node_ids: list[str]) -> str:
         """Create one stable group for a connection batch."""
@@ -863,6 +893,13 @@ class TerminalWorkspace(QWidget):
                 and self.valid_broadcast(group_id, targets)):
             self.broadcastRequested.emit(group_id, command, targets)
 
+    def _request_interrupt(self) -> None:
+        group_id = self.active_group_id()
+        targets = self.broadcast_targets()
+        if (not self._busy and not self._broadcast_busy and group_id is not None
+                and self.valid_broadcast(group_id, targets)):
+            self.interruptRequested.emit(group_id, dict(targets))
+
     def _insert_command_snippet(self, snippet: str) -> None:
         target = self._active_command_target()
         if target is None:
@@ -919,6 +956,8 @@ class TerminalWorkspace(QWidget):
             for node_id, label in sorted(self._nodes.items(), key=lambda pair: pair[1].casefold()):
                 sessions = [record for record in self._sessions.values() if record.node_id == node_id]
                 node = QTreeWidgetItem(self.node_tree, [label, f"{len(sessions)} 个终端", ""])
+                if node_id in self._node_addresses:
+                    node.setToolTip(0, f"连接地址：{self._node_addresses[node_id]}")
                 status, detail = self._node_statuses.get(node_id, ("unknown", ""))
                 if status in {"error", "unreachable", "untrusted", "auth"}:
                     node.setText(1, {"untrusted": "主机密钥待核验", "auth": "认证失败"}.get(status, "不可连接"))
@@ -1102,6 +1141,7 @@ class TerminalWorkspace(QWidget):
         self.broadcast_input.setEnabled(enabled)
         self._update_command_helpers()
         self.send_button.setEnabled(enabled and bool(targets) and bool(self.broadcast_input.text().strip()))
+        self.interrupt_button.setEnabled(enabled and bool(targets))
         if self._broadcast_busy:
             self.broadcast_summary.setText(f"{group_name} · 正在检查各终端工作目录…")
             self.broadcast_summary.setToolTip("")
