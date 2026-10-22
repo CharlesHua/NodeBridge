@@ -6,6 +6,42 @@ This file records user-visible changes. `Unreleased` describes work in the curre
 
 ## Unreleased / 未发布
 
+- Fixed the separate Windows whole-window disappearance on first terminal use: prepare the Qt graphics surface before showing the main window, using one persistent hidden, unloaded Qt Quick widget. This prevents the later Raster-to-Direct3D native-window recreation while keeping terminal pages lazy-loaded and the normal graphics backend unchanged.
+
+- 修复 Windows 首次使用终端时整个主窗口短暂消失的问题：显示主窗口前，通过一个常驻、隐藏且不加载内容的 Qt Quick 控件准备图形表面，避免首次插入终端时从普通绘制切换到 Direct3D 而重建原生窗口。终端页面仍按需加载，沿用原图形后端。
+
+- Node rows now refresh status, address, CPU, memory, and process users together. Each sample refreshes users and their timestamp; unavailable nodes clear stale metrics. Node/session rows are reused during connection changes to preserve selection, checks, and collapsed branches. Terminal startup uses a matching dark WebEngine background and batches buffered output to avoid white loading flashes and partial initial rendering.
+
+- 节点行统一刷新状态、地址、CPU、内存和进程用户。用户及其更新时间随每轮采样更新，不可连接节点清除过期指标。连接变化时复用节点／会话行，保留选择、勾选和折叠状态。终端启动统一 WebEngine 的深色背景，并合并首次缓存输出，避免加载白闪及初始输出分段绘制。
+
+- Permanently ending a terminal group now removes all successfully terminated tabs and the empty group even if tmux closes their SSH channels before the termination results arrive. Hidden tabs and the combined view are cleaned up too; failed sessions and unrelated groups remain available.
+
+- 永久结束终端组时，即使 tmux 提前关闭 SSH 通道，也会一次清理所有成功结束的终端标签及空组，包括隐藏标签和联合视图；失败会话及其他组仍保留。
+
+- File operations now reserve only their local, direct-node, or work-node panes. Delete, rename, directory creation, and independent copies run in the background without locking the other panes; directory reads have separate jobs. Remote mutations use isolated SFTP channels, completion preserves later navigation, and apply-all conflict choices stay within one copy task. Background file errors use nonmodal notifications.
+
+- 文件操作改为只占用涉及的本地、直连或间接节点侧。删除、重命名、新建目录及互不涉及的复制在后台执行，不再锁住另外两侧；目录读取独立运行。远程修改使用独立 SFTP 通道，完成后保留用户后来切换的目录，“全部覆盖／跳过”选择仅作用于对应复制任务。后台文件错误提示不再锁住主窗口。
+
+- Remember main-window size and maximized state, panel splitter proportions, and file/terminal/task table column widths. Normal and maximized windows keep separate layouts, restored when switching modes and on the next launch.
+
+- 记住主窗口尺寸及最大化状态、面板分隔比例，以及文件／终端／任务列表的列宽。普通窗口与最大化窗口分别保存布局，切换状态及下次启动时自动恢复。
+
+- Successful permanent termination now automatically removes the corresponding local task records from both workspaces. Successful scans also remove confirmed-missing sessions; failed queries, failed terminations and detached sessions retain their records. Cleanup is saved immediately, has no separate button, and cannot be undone by older scan results.
+
+- 终端页或任务页成功永久结束会话后自动清理对应本地记录；扫描成功确认远端不存在时也自动清理。查询失败、结束失败或仅分离时保留记录。清理立即保存，无需单独按钮，旧扫描结果不会将已清理记录重新加回。
+
+- Isolated tmux inventory scans from terminal mutations and foreground jobs. Scans no longer disable restore, termination, file actions, or site disconnect; failures stay in the task summary/logs. Stale results cannot overwrite later local state changes. The Tasks table supports Ctrl/Shift multi-selection, batch restore/detach, and confirmed batch termination, preserving selections during refresh.
+
+- tmux 清单扫描独立于终端修改及前台任务，不再因扫描禁用恢复、结束会话、文件操作或站点断开；失败显示在任务摘要和日志中。旧结果不会覆盖后续本地状态变化。任务表支持 Ctrl／Shift 多选、批量恢复／分离和经确认的批量结束，刷新时保留选中项。
+
+- Terminal disconnect actions now offer permanent tmux termination or detaching connections, with cancellation as the default. Group/checked-node actions apply one choice to all members; failed terminations retain their connections and report errors. Task-page detach and application exit still preserve remote sessions.
+
+- 终端断开操作现可选择永久结束 tmux 会话或分离连接，默认取消。组／勾选节点统一选择，结束失败时保留对应连接并报告原因；任务页分离及退出程序仍保留远程会话。
+
+- Added optional tmux persistent terminals (remote tmux 3.1+), an independent Tasks tab for scanning/restoring/detaching/confirmed termination, and local session metadata. tmux control mode preserves the existing xterm.js input, color, broadcast, and combined-output pipeline. Ordinary terminals remain available; missing tmux is reported without installing or falling back silently.
+
+- 新增可选 tmux 持久终端（远程须 tmux 3.1+）及独立“任务”页，可扫描、恢复、分离并经确认结束会话，保存本地会话元数据。控制模式保留既有 xterm.js 输入、颜色、广播及联合输出通路。普通终端仍可使用，缺少 tmux 时明确报错，不安装或静默降级。
+
 - Moved the confirmed interrupt button to the broadcast title row, leaving the command-entry row for typing and sending.
 
 - 中断按钮移到“广播命令”标题所在行，输入行保留命令输入和发送。

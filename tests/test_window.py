@@ -14,7 +14,7 @@ import paramiko
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QDir, QPointF, QSettings, Qt
+from PySide6.QtCore import QDir, QItemSelectionModel, QPointF, QSettings, Qt
 from PySide6.QtGui import QDropEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLineEdit, QMessageBox, QTextBrowser
@@ -88,20 +88,27 @@ class WindowTests(unittest.TestCase):
     def _finish_job(self):
         deadline = time.monotonic() + 5
         while (self.window._job is not None or self.window._copy_job is not None
+               or self.window._file_tasks or self.window._remote_browse_job is not None
+               or self.window._worker_browse_job is not None
                or self.window._worker_connect_job is not None) and time.monotonic() < deadline:
             self.app.processEvents()
             time.sleep(0.01)
         self.assertIsNone(self.window._job)
         self.assertIsNone(self.window._copy_job)
         self.assertIsNone(self.window._worker_connect_job)
+        self.assertFalse(self.window._file_tasks)
+        self.assertIsNone(self.window._remote_browse_job)
+        self.assertIsNone(self.window._worker_browse_job)
 
     def _finish_background(self, name):
         deadline = time.monotonic() + 5
-        while getattr(self.window, name) is not None and time.monotonic() < deadline:
+        names = (name, "_remote_browse_job", "_worker_browse_job") if name == "_job" else (name,)
+        while any(getattr(self.window, key) is not None for key in names) and time.monotonic() < deadline:
             self.app.processEvents()
             time.sleep(0.01)
         self.app.processEvents()
-        self.assertIsNone(getattr(self.window, name))
+        for key in names:
+            self.assertIsNone(getattr(self.window, key))
 
     def test_file_operation_log_updates_success_and_failure(self):
         self.window._run(
@@ -228,6 +235,12 @@ class WindowTests(unittest.TestCase):
 
     def test_remote_delete_requires_confirmation(self):
         class FakeSession:
+            def open_sftp_peer(self):
+                return self
+
+            def close(self):
+                pass
+
             def list_directory(self, path):
                 return DirectoryListing(path, ())
 
@@ -249,6 +262,12 @@ class WindowTests(unittest.TestCase):
 
     def test_remote_rename_edits_filename_in_table(self):
         class FakeSession:
+            def open_sftp_peer(self):
+                return self
+
+            def close(self):
+                pass
+
             def list_directory(self, path):
                 return DirectoryListing(path, ())
 
@@ -383,7 +402,7 @@ class WindowTests(unittest.TestCase):
 
         self.window._session = FakeSession()
         self.window._browse("/tmp")
-        self.assertIsNotNone(self.window._job)
+        self.assertIsNotNone(self.window._remote_browse_job)
         self._finish_job()
         self.assertEqual(self.window.path_edit.text(), "/tmp")
 
@@ -420,6 +439,261 @@ class WindowTests(unittest.TestCase):
         finally:
             release.set()
             self._finish_background("_copy_job")
+
+    @contextmanager
+    def _isolated_file_sessions(self):
+        jump = Mock(config=NodeConfig("jump.example.invalid", 22, "alice"))
+        jump.list_directory.side_effect = lambda path: DirectoryListing(path, ())
+        jump_peer = Mock()
+        jump_peer.list_directory.side_effect = lambda path: DirectoryListing(path, ())
+        jump.open_sftp_peer.return_value = jump_peer
+        self.window._session = jump
+        entry = RemoteEntry("note.txt", "/original/note.txt", False, False, 4, None)
+        self.window._show_listing(DirectoryListing("/original", (entry,)))
+        self.window.table.selectRow(0)
+        worker = Mock()
+        worker.list_directory.side_effect = lambda path: DirectoryListing(path, ())
+        worker_peer = Mock()
+        worker_peer.sftp.lstat.return_value.st_mode = stat.S_IFREG
+        worker_peer.sftp.stat.return_value.st_mode = stat.S_IFDIR
+        worker_peer.list_directory.side_effect = lambda path: DirectoryListing(path, ())
+        self.window._workers["node02"] = worker
+        browser = self.window.worker_browser
+        browser.path_edit.setText("/original")
+        browser.set_connection("node02", DirectoryListing("/original", (entry,)))
+        browser.table.selectRow(0)
+        self.window._update_controls()
+
+        class Pool:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            @contextmanager
+            def worker(self, alias):
+                yield worker_peer
+
+            @contextmanager
+            def jump(self):
+                yield jump_peer
+
+        with patch("nodebridge.window.TransferSessionPool", return_value=Pool()):
+            yield jump, jump_peer, worker, worker_peer
+
+    def test_three_panes_can_delete_concurrently_on_independent_channels(self):
+        started = {scope: threading.Event() for scope in ("local", "remote", "workers")}
+        release = threading.Event()
+        with self._isolated_file_sessions() as (jump, jump_peer, worker, worker_peer):
+            def remove(session, paths):
+                self.assertIn(session, (jump_peer, worker_peer))
+                scope = "remote" if session is jump_peer else "workers"
+                self.assertEqual(paths, ["/original/note.txt"])
+                started[scope].set()
+                if not release.wait(5):
+                    raise TimeoutError("delete was not released")
+                return 1
+
+            def trash(paths):
+                started["local"].set()
+                if not release.wait(5):
+                    raise TimeoutError("trash was not released")
+                return 1
+
+            try:
+                with patch("nodebridge.window.delete_remote", side_effect=remove) as delete, \
+                        patch("nodebridge.window.trash_local", side_effect=trash), \
+                        patch.object(self.window, "_local_selected_paths", return_value=["C:/test/note.txt"]), \
+                        patch.object(self.window, "_choose_worker_scope", return_value=["node02"]), \
+                        patch("nodebridge.window.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes) as confirm:
+                    self.window._delete_worker_selection()
+                    self.assertTrue(started["workers"].wait(2))
+                    self.window._delete_remote_selection()
+                    self.assertTrue(started["remote"].wait(2))
+                    self.window._delete_local_selection()
+                    self.assertTrue(started["local"].wait(2))
+                    self.assertEqual(len(self.window._file_tasks), 3)
+                    self.assertTrue(self.window.local_table.isEnabled())
+                    self.assertTrue(self.window.table.isEnabled())
+                    self.assertTrue(self.window.worker_browser.table.isEnabled())
+                    self.assertFalse(self.window.disconnect_button.isEnabled())
+                    self.window._delete_remote_selection()
+                    self.assertEqual(confirm.call_count, 3)
+                    self.window._browse("/new-jump")
+                    self.window._browse_workers("/new-worker")
+                    self._finish_background("_job")
+                    self.assertEqual(self.window._path, "/new-jump")
+                    self.assertEqual(self.window.worker_browser.rendered_path, "/new-worker")
+                    jump.list_directory.assert_called_with("/new-jump")
+                    worker.list_directory.assert_called_with("/new-worker")
+                    release.set()
+                    self._finish_job()
+                    self.assertEqual(delete.call_count, 2)
+                    self.assertEqual(self.window._path, "/new-jump")
+                    self.assertEqual(self.window.worker_browser.rendered_path, "/new-worker")
+                    jump_peer.close.assert_called_once()
+                    self.assertTrue(self.window.disconnect_button.isEnabled())
+            finally:
+                release.set()
+                self._finish_job()
+
+    def test_local_copy_and_worker_delete_overlap_without_locking_jump(self):
+        copying, deleting, release = threading.Event(), threading.Event(), threading.Event()
+        with self._isolated_file_sessions() as (_jump, _peer, _worker, worker_peer):
+            def copy(*_args):
+                copying.set()
+                if not release.wait(5):
+                    raise TimeoutError("copy was not released")
+                return CopyResult(1, 0, 4)
+
+            def delete(session, _paths):
+                self.assertIs(session, worker_peer)
+                deleting.set()
+                if not release.wait(5):
+                    raise TimeoutError("delete was not released")
+                return 1
+
+            try:
+                with patch("nodebridge.window.copy_local_to_local", side_effect=copy), \
+                        patch("nodebridge.window.delete_remote", side_effect=delete), \
+                        patch.object(self.window, "_choose_worker_scope", return_value=["node02"]), \
+                        patch("nodebridge.window.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes), \
+                        patch("nodebridge.window.QInputDialog.getText", return_value=("new-directory", True)), \
+                        patch("nodebridge.window.create_remote_directory", return_value="/original/new-directory") as create:
+                    self.window._copy_local_to_local(["C:/test/a.txt"], "C:/test/destination")
+                    self.assertTrue(copying.wait(2))
+                    self.window._delete_worker_selection()
+                    self.assertTrue(deleting.wait(2))
+                    self.window._create_remote_directory(False)
+                    self._finish_background("_file_task_remote")
+                    create.assert_called_once()
+                    self.assertEqual(len(self.window._file_tasks), 2)
+                    self.assertIsNotNone(self.window._copy_job)
+            finally:
+                release.set()
+                self._finish_job()
+
+    def test_slow_jump_browse_does_not_block_worker_browse_or_local_create(self):
+        entered, release = threading.Event(), threading.Event()
+        with self._isolated_file_sessions() as (jump, _peer, _worker, _worker_peer):
+            def read(path):
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("browse was not released")
+                return DirectoryListing(path, ())
+
+            jump.list_directory.side_effect = read
+            try:
+                with patch("nodebridge.window.QInputDialog.getText", return_value=("new-directory", True)), \
+                        patch("nodebridge.window.create_local_directory", return_value=Path("C:/test/new-directory")) as create:
+                    self.window._browse("/slow-jump")
+                    self.assertTrue(entered.wait(2))
+                    self.assertTrue(self.window.local_table.isEnabled())
+                    self.assertTrue(self.window.worker_browser.table.isEnabled())
+                    self.window._browse_workers("/other-worker")
+                    self._finish_background("_worker_browse_job")
+                    self.window._create_local_directory(False)
+                    self._finish_background("_file_task_local")
+                    create.assert_called_once()
+                    self.assertEqual(self.window.worker_browser.rendered_path, "/other-worker")
+                    self.assertIsNotNone(self.window._remote_browse_job)
+            finally:
+                release.set()
+                self._finish_job()
+
+    def test_disjoint_copies_keep_apply_all_choices_separate(self):
+        entered = [threading.Event(), threading.Event()]
+        release = threading.Event()
+        decisions = [[], []]
+        with self._isolated_file_sessions():
+            def copy(number, *args):
+                entered[number].set()
+                if not release.wait(5):
+                    raise TimeoutError("copies were not released")
+                resolve = args[-1]
+                for name in ("one.txt", "two.txt"):
+                    decisions[number].append(resolve(ConflictInfo(name, 3, None, name, 5, None)))
+                return CopyResult(1, 0, 4)
+
+            try:
+                with patch("nodebridge.window.copy_local_to_local", side_effect=lambda *a: copy(0, *a)), \
+                        patch("nodebridge.window.copy_remote_to_remote", side_effect=lambda *a: copy(1, *a)), \
+                        patch("nodebridge.window.ConflictDialog.result_choice", side_effect=[
+                            (ConflictAction.SKIP, True), (ConflictAction.OVERWRITE, True),
+                        ]) as prompt:
+                    self.window._copy_local_to_local(["C:/test/a.txt"], "C:/test/destination")
+                    self.window._copy_remote_to_remote(["/original/a.txt"], "/destination")
+                    self.assertTrue(all(event.wait(2) for event in entered))
+                    self.assertEqual(len(self.window._file_tasks), 2)
+                    release.set()
+                    self._finish_job()
+                    self.assertEqual(prompt.call_count, 2)
+                    self.assertEqual(decisions[0][0], decisions[0][1])
+                    self.assertEqual(decisions[1][0], decisions[1][1])
+                    self.assertEqual({decisions[0][0], decisions[1][0]},
+                                     {ConflictAction.SKIP, ConflictAction.OVERWRITE})
+            finally:
+                release.set()
+                self._finish_job()
+
+    def test_failed_delete_releases_only_its_pane_and_reports_nonmodal_error(self):
+        entered, release = threading.Event(), threading.Event()
+        with self._isolated_file_sessions() as (_jump, peer, _worker, _worker_peer):
+            def trash(_paths):
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("trash was not released")
+                return 1
+
+            try:
+                with patch("nodebridge.window.trash_local", side_effect=trash), \
+                        patch.object(self.window, "_local_selected_paths", return_value=["C:/test/note.txt"]), \
+                        patch("nodebridge.window.delete_remote", side_effect=PermissionError("delete denied")), \
+                        patch("nodebridge.window.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
+                    self.window._delete_local_selection()
+                    self.assertTrue(entered.wait(2))
+                    self.window._delete_remote_selection()
+                    self._finish_background("_file_task_remote")
+                    self.assertTrue(self.window._file_busy("local"))
+                    self.assertFalse(self.window._file_busy("remote"))
+                    self.assertFalse(self.window._file_busy("workers"))
+                    self.assertTrue(self.window.disconnect_button.isEnabled())
+                    self.assertIn("delete denied", self.window.operation_log.toPlainText())
+                    errors = [box for box in self.window.findChildren(QMessageBox)
+                              if "delete denied" in box.text()]
+                    self.assertEqual(len(errors), 1)
+                    self.assertFalse(errors[0].isModal())
+                    errors[0].close()
+                    peer.close.assert_called_once()
+                    self.assertFalse(self.window.close())
+            finally:
+                release.set()
+                self._finish_job()
+
+    def test_worker_disconnect_keeps_other_panes_available(self):
+        entered, release = threading.Event(), threading.Event()
+        with self._isolated_file_sessions() as (_jump, _peer, worker, _worker_peer):
+            def close():
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("disconnect was not released")
+
+            worker.close.side_effect = close
+            try:
+                with patch.object(self.window.worker_browser, "target_aliases", return_value=["node02"]):
+                    self.window._disconnect_selected_workers()
+                    self.assertTrue(entered.wait(2))
+                    self.assertIsNone(self.window._job)
+                    self.assertTrue(self.window.local_table.isEnabled())
+                    self.assertTrue(self.window.table.isEnabled())
+                    self.window._browse("/while-worker-disconnects")
+                    self._finish_background("_remote_browse_job")
+                    self.assertEqual(self.window._path, "/while-worker-disconnects")
+                    self.assertIsNotNone(self.window._worker_connect_job)
+            finally:
+                release.set()
+                self._finish_job()
 
     def test_completion_toast_appears_at_lower_right_and_updates(self):
         self.window.show()
@@ -593,8 +867,8 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(self.window.worker_browser.checked_aliases(), [])
 
     def test_file_and_terminal_views_show_connected_nodes(self):
-        self.assertEqual([self.window.workspace_tabs.tabText(index) for index in range(2)],
-                         ["文件", "终端"])
+        self.assertEqual([self.window.workspace_tabs.tabText(index) for index in range(3)],
+                         ["文件", "终端", "任务"])
         self.assertIs(self.window.workspace_tabs.widget(0), self.window.file_view)
         self.assertIs(self.window.workspace_tabs.widget(1), self.window.terminal_workspace)
         self.window._session = Mock(config=NodeConfig("cft01", 22, "alice"))
@@ -610,6 +884,448 @@ class WindowTests(unittest.TestCase):
         self.window._workers.clear()
         self.window._sync_terminal_nodes()
         self.assertEqual(terminal.node_tree.topLevelItemCount(), 1)
+
+    def test_persistent_terminal_detaches_and_restores_without_recreating_task(self):
+        from nodebridge.tmux_session import RemoteTask
+        from nodebridge.tasks_workspace import load_tasks
+        root = Mock(config=NodeConfig("jump", 22, "alice"), _alias_route=())
+        self.window._session = root
+        self.window._sync_terminal_nodes()
+        terminal = self.window.terminal_workspace
+        terminal.persistent_mode.setChecked(True)
+        channels = []
+        def attach(task):
+            channel = Mock(closed=False)
+            channel.recv_ready.return_value = False
+            channel.exit_status_ready.return_value = False
+            channels.append(channel)
+            return channel
+        backend = Mock(route=())
+        backend.create.side_effect = lambda group, label: RemoteTask("nodebridge-test", "%0", "/work", "bash", 0, 123, group, label)
+        backend.attach.side_effect = attach
+        with patch("nodebridge.window.TmuxBackend", return_value=backend):
+            terminal.new_terminal_button.click()
+            self._finish_job()
+            self.assertEqual(len(self.window._tmux_records), 1)
+            record = next(iter(self.window._tmux_records.values()))
+            sid, key = record["local_session"], record["key"]
+            self.assertTrue(self.window._terminal_manager.has_session(sid))
+            self.assertEqual(load_tasks(self.window._settings)[key]["local_session"], "")
+            backend.scan.return_value = [RemoteTask(**{field: record[field] for field in RemoteTask.__dataclass_fields__})]
+            self.window._close_terminal(sid)
+            channels[0].close.assert_called_once()
+            backend.kill.assert_not_called()
+            self.assertEqual(self.window._tmux_records[key]["local_session"], "")
+            self.window._restore_tmux_task(key)
+            self._finish_job()
+            self.assertEqual(backend.create.call_count, 1)
+            self.assertEqual(backend.attach.call_count, 2)
+            self.assertEqual(len(self.window._persistent_sessions), 1)
+            restored = self.window._tmux_records[key]["local_session"]
+            self.assertNotEqual(sid, restored)
+            self.assertEqual(self.window._tmux_records[key]["state"], "本机已连接")
+
+    def test_task_scan_recovers_lost_metadata_and_termination_requires_confirmation(self):
+        from nodebridge.tmux_session import RemoteTask
+        root = Mock(config=NodeConfig("jump", 22, "alice"), _alias_route=())
+        self.window._session = root
+        self.window._sync_terminal_nodes()
+        task = RemoteTask("nodebridge-recovered", "%0", "/work", "python", 0, 123, "group", "任务组")
+        backend = Mock()
+        backend.scan.return_value = [task]
+        helper = Mock()
+        with patch("nodebridge.window.RemoteSession.connect_shell_host", return_value=helper), \
+                patch("nodebridge.window.TmuxBackend", return_value=backend):
+            self.window._scan_tmux_tasks()
+            self._finish_background("_tmux_scan_job")
+            record = next(iter(self.window._tmux_records.values()))
+            self.assertEqual(record["state"], "可恢复")
+            self.assertEqual(self.window.tasks_workspace.table.item(0, 3).text(), task.name)
+            helper.close.assert_called_once()
+            with patch("nodebridge.window.QMessageBox.question", return_value=QMessageBox.StandardButton.No):
+                self.window._terminate_tmux_task(record["key"])
+                backend.kill.assert_not_called()
+            with patch("nodebridge.window.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
+                self.window._terminate_tmux_task(record["key"])
+                self._finish_background("_tmux_job")
+                backend.kill.assert_called_once_with(task.name)
+                self.assertNotIn(record["key"], self.window._tmux_records)
+
+    def _connected_persistent_pair(self):
+        from nodebridge.tmux_session import RemoteTask
+        root = Mock(config=NodeConfig("jump", 22, "alice"), _alias_route=())
+        self.window._session = root
+        terminal = self.window.terminal_workspace
+        terminal.set_nodes([("a", "cft02"), ("b", "cft03")])
+        group = terminal.create_group(["a", "b"])
+        sessions, channels, records = [], [], []
+        for index, node in enumerate(("a", "b")):
+            sid = terminal.add_terminal(node, group_id=group, persistent=True)
+            channel = Mock(closed=False)
+            channel.recv_ready.return_value = channel.exit_status_ready.return_value = False
+            self.window._terminal_manager.add(sid, node, channel)
+            task = RemoteTask(f"nodebridge-test{index}", "%0", "/work", "bash", 1, 123, "group", "测试组")
+            record = self.window._remember_tmux_task(root.config, (f"cft0{index+2}",), task, node)
+            key = record["key"]
+            record["local_session"] = sid
+            self.window._persistent_sessions[sid] = key
+            sessions.append(sid)
+            channels.append(channel)
+            records.append(record)
+        return terminal, group, sessions, channels, records
+
+    def test_tmux_disconnect_detaches_but_tab_close_only_hides(self):
+        terminal, group, sessions, channels, records = self._connected_persistent_pair()
+        with patch.object(self.window, "_terminal_close_choice", return_value="cancel"):
+            self.window._request_close_terminal(sessions[0])
+        self.assertGreaterEqual(terminal.terminal_tabs.indexOf(terminal._views[sessions[0]]), 0)
+        terminal._hide_tab(terminal.terminal_tabs.indexOf(terminal._views[sessions[0]]))
+        channels[0].close.assert_not_called()
+        terminal._show_tab(sessions[0])
+        self.assertGreaterEqual(terminal.terminal_tabs.indexOf(terminal._views[sessions[0]]), 0)
+        with patch.object(self.window, "_terminal_close_choice", return_value="detach"), \
+                patch("nodebridge.window.TmuxBackend") as backend:
+            self.window._close_terminal_group(group)
+            backend.assert_not_called()
+        for sid, channel, record in zip(sessions, channels, records):
+            channel.close.assert_called_once()
+            self.assertFalse(self.window._terminal_manager.has_session(sid))
+            self.assertNotIn(sid, terminal._sessions)
+            self.assertEqual(record["local_session"], "")
+            self.assertEqual(record["state"], "已分离（待检查）")
+
+    def test_tmux_single_and_checked_disconnect_detach_without_killing(self):
+        terminal, _group, sessions, channels, records = self._connected_persistent_pair()
+        with patch.object(self.window, "_terminal_close_choice", return_value="detach"), \
+                patch("nodebridge.window.TmuxBackend") as backend:
+            terminal.disconnectRequested.emit(sessions[0])
+            self.assertTrue(self.window._terminal_manager.has_session(sessions[1]))
+            self.window._close_terminals(["b"])
+            backend.assert_not_called()
+        for sid, channel, record in zip(sessions, channels, records):
+            channel.close.assert_called_once()
+            self.assertFalse(self.window._terminal_manager.has_session(sid))
+            self.assertEqual(record["state"], "已分离（待检查）")
+
+    def test_tmux_scan_allows_other_operations_and_preserves_newer_states(self):
+        from nodebridge.tmux_session import RemoteTask
+        terminal, _group, sessions, _channels, records = self._connected_persistent_pair()
+        self.window._refresh_tmux_tasks()
+        self.window.tasks_workspace.table.selectRow(0)
+        entered, release = threading.Event(), threading.Event()
+        helper = Mock()
+        def factory(_host, **_kwargs):
+            backend = Mock()
+            def scan():
+                if backend.route == ("cft02",):
+                    entered.set()
+                    if not release.wait(3):
+                        raise TimeoutError("test scan was not released")
+                return [RemoteTask(**{field: r[field] for field in RemoteTask.__dataclass_fields__})
+                        for r in records if tuple(r["route"]) == backend.route]
+            backend.scan.side_effect = scan
+            return backend
+        with patch("nodebridge.window.RemoteSession.connect_shell_host", return_value=helper), \
+                patch("nodebridge.window.TmuxBackend", side_effect=factory), \
+                patch.object(self.window, "enable_resource_monitoring"):
+            try:
+                self.window._scan_tmux_tasks()
+                self.assertTrue(entered.wait(1))
+                self.assertIsNone(self.window._tmux_job)
+                self.assertTrue(self.window.disconnect_button.isEnabled())
+                self.assertTrue(self.window.local_table.isEnabled())
+                self.assertTrue(terminal.new_terminal_button.isEnabled())
+                self.assertTrue(self.window.tasks_workspace.restore_button.isEnabled())
+                self.assertFalse(self.window.tasks_workspace.scan_button.isEnabled())
+                self.window._restore_tmux_task(records[0]["key"])
+                self.assertIs(terminal.terminal_tabs.currentWidget(), terminal._views[sessions[0]])
+                with patch.object(self.window, "_terminal_close_choice", return_value="detach"):
+                    self.window._request_close_terminal(sessions[0])
+                self.window._end_terminal_sessions([sessions[1]])
+                self._finish_background("_tmux_job")
+                foreground_results = []
+                self.window._run(lambda: "file operation", foreground_results.append, "test")
+                self._finish_job()
+                self.assertEqual(foreground_results, ["file operation"])
+            finally:
+                release.set()
+                self._finish_background("_tmux_scan_job")
+        self.assertEqual(self.window._tmux_records[records[0]["key"]]["state"], "已分离（待检查）")
+        self.assertNotIn(records[1]["key"], self.window._tmux_records)
+        helper.close.assert_called_once()
+
+    def test_tmux_scan_failure_has_no_modal_warning(self):
+        self.window._session = Mock(config=NodeConfig("jump", 22, "alice"))
+        with patch("nodebridge.window.RemoteSession.connect_shell_host", side_effect=OSError("offline")), \
+                patch("nodebridge.window.QMessageBox.warning") as warning:
+            self.window._scan_tmux_tasks()
+            self._finish_background("_tmux_scan_job")
+        warning.assert_not_called()
+        self.assertIn("扫描失败", self.window.tasks_workspace.summary.text())
+        self.assertTrue(self.window.tasks_workspace.scan_button.isEnabled())
+
+    def test_tmux_scan_does_not_block_site_disconnect(self):
+        self.window._session = root = Mock(config=NodeConfig("jump", 22, "alice"))
+        entered, release = threading.Event(), threading.Event()
+        def scan():
+            entered.set()
+            release.wait(3)
+            return []
+        backend = Mock()
+        backend.scan.side_effect = scan
+        with patch("nodebridge.window.RemoteSession.connect_shell_host", return_value=Mock()), \
+                patch("nodebridge.window.TmuxBackend", return_value=backend):
+            try:
+                self.window._scan_tmux_tasks()
+                self.assertTrue(entered.wait(1))
+                self.window._disconnect()
+                self._finish_job()
+                self.assertIsNone(self.window._session)
+                self.assertTrue(self.window._tmux_cancel.is_set())
+                root.close.assert_called_once()
+            finally:
+                release.set()
+                self._finish_background("_tmux_scan_job")
+
+    def test_tmux_scan_cleans_missing_records_but_retains_query_failures(self):
+        from nodebridge.tasks_workspace import load_tasks
+        _terminal, _group, sessions, _channels, records = self._connected_persistent_pair()
+        for sid in sessions:
+            self.window._close_terminal(sid)
+        def factory(_host, **_kwargs):
+            backend = Mock()
+            def scan():
+                if backend.route == tuple(records[1]["route"]):
+                    raise OSError("offline")
+                return []
+            backend.scan.side_effect = scan
+            return backend
+        with patch("nodebridge.window.RemoteSession.connect_shell_host", return_value=Mock()), \
+                patch("nodebridge.window.TmuxBackend", side_effect=factory):
+            self.window._scan_tmux_tasks()
+            self._finish_background("_tmux_scan_job")
+        self.assertNotIn(records[0]["key"], self.window._tmux_records)
+        self.assertEqual(self.window._tmux_records[records[1]["key"]]["state"], "查询失败")
+        self.assertEqual(set(load_tasks(self.window._settings)), {records[1]["key"]})
+        self.assertFalse(hasattr(self.window.tasks_workspace, "remove_button"))
+
+    def test_tmux_scan_cannot_restore_removed_history(self):
+        from nodebridge.tmux_session import RemoteTask
+        _terminal, _group, sessions, _channels, records = self._connected_persistent_pair()
+        old_task = RemoteTask(**{field: records[0][field] for field in RemoteTask.__dataclass_fields__})
+        entered, release = threading.Event(), threading.Event()
+        def factory(_host, **_kwargs):
+            backend = Mock()
+            def scan():
+                if backend.route == tuple(records[0]["route"]):
+                    entered.set()
+                    release.wait(3)
+                    return [old_task]
+                return []
+            backend.scan.side_effect = scan
+            return backend
+        with patch("nodebridge.window.RemoteSession.connect_shell_host", return_value=Mock()), \
+                patch("nodebridge.window.TmuxBackend", side_effect=factory):
+            try:
+                self.window._scan_tmux_tasks()
+                self.assertTrue(entered.wait(1))
+                self.window._end_terminal_sessions([sessions[0]])
+                self._finish_background("_tmux_job")
+            finally:
+                release.set()
+                self._finish_background("_tmux_scan_job")
+        self.assertNotIn(records[0]["key"], self.window._tmux_records)
+
+    def test_tasks_multiselect_preserved_and_actions_use_all_selected(self):
+        _terminal, _group, sessions, channels, records = self._connected_persistent_pair()
+        self.window._refresh_tmux_tasks()
+        tasks = self.window.tasks_workspace
+        tasks.table.selectRow(0)
+        tasks.table.selectionModel().select(tasks.table.model().index(1, 0),
+            QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows)
+        keys = [r["key"] for r in records]
+        self.assertEqual(tasks.selected_keys(), keys)
+        self.window._refresh_tmux_tasks()
+        self.assertEqual(tasks.selected_keys(), keys)
+        with patch.object(self.window, "_restore_tmux_task") as restore:
+            tasks.restore_button.click()
+            self.assertEqual([call.args[0] for call in restore.call_args_list], keys)
+        tasks.detach_button.click()
+        for sid, channel in zip(sessions, channels):
+            channel.close.assert_called_once()
+            self.assertFalse(self.window._terminal_manager.has_session(sid))
+        self.assertEqual(tasks.selected_keys(), keys)
+        backend = Mock()
+        with patch("nodebridge.window.TmuxBackend", return_value=backend), \
+                patch("nodebridge.window.QMessageBox.question", return_value=QMessageBox.StandardButton.No):
+            tasks.terminate_button.click()
+            backend.kill.assert_not_called()
+        with patch("nodebridge.window.TmuxBackend", return_value=backend), \
+                patch("nodebridge.window.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes) as confirm:
+            tasks.terminate_button.click()
+            self._finish_background("_tmux_job")
+        confirm.assert_called_once()
+        self.assertEqual([call.args[0] for call in backend.kill.call_args_list], [r["name"] for r in records])
+        self.assertEqual(self.window._tmux_records, {})
+        from nodebridge.tasks_workspace import load_tasks
+        self.assertEqual(load_tasks(self.window._settings), {})
+
+    def test_tmux_group_end_removes_tabs_when_channels_close_before_kill_returns(self):
+        for early_count in (1, 2):
+            with self.subTest(early_closed_channels=early_count):
+                terminal, group, sessions, channels, records = self._connected_persistent_pair()
+                ordinary = terminal.add_terminal("a", group_id=group)
+                terminal.show_group_combined(group)
+                terminal._hide_tab(terminal.terminal_tabs.indexOf(terminal._views[sessions[0]]))
+                other_group = terminal.create_group(["a"])
+                other = terminal.add_terminal("a", group_id=other_group)
+                entered, release = threading.Event(), threading.Event()
+
+                def kill(_name):
+                    entered.set()
+                    if not release.wait(5):
+                        raise TimeoutError("kill was not released")
+
+                try:
+                    with patch.object(self.window, "_terminal_close_choice", return_value="end"), \
+                            patch("nodebridge.window.TmuxBackend") as backend:
+                        backend.return_value.kill.side_effect = kill
+                        self.window._close_terminal_group(group)
+                        self.assertTrue(entered.wait(2))
+                        for sid, record in zip(sessions[:early_count], records[:early_count]):
+                            self.window._terminal_manager.close(sid, unexpected=True)
+                            self.assertEqual(record["local_session"], "")
+                            self.assertIn(sid, terminal._closed_sessions)
+                        release.set()
+                        self._finish_background("_tmux_job")
+                        self.assertEqual(backend.return_value.kill.call_count, 2)
+                    self.assertNotIn(group, terminal._groups)
+                    self.assertNotIn(group, terminal._combined_views)
+                    for sid in [*sessions, ordinary]:
+                        self.assertNotIn(sid, terminal._sessions)
+                        self.assertNotIn(sid, terminal._views)
+                        self.assertNotIn(sid, terminal._closed_sessions)
+                    for channel, record in zip(channels, records):
+                        channel.close.assert_called_once()
+                        self.assertNotIn(record["key"], self.window._tmux_records)
+                    self.assertEqual(terminal.group_sessions(other_group), [other])
+                    self.assertEqual(terminal.terminal_tabs.count(), 1)
+                    terminal.remove_terminal(other)
+                finally:
+                    release.set()
+                    self._finish_background("_tmux_job")
+
+    def test_tmux_group_end_keeps_failed_session_and_other_group(self):
+        terminal, group, sessions, channels, records = self._connected_persistent_pair()
+        other_group = terminal.create_group(["a"])
+        other = terminal.add_terminal("a", group_id=other_group)
+        backend = Mock()
+        entered, release = threading.Event(), threading.Event()
+
+        def kill(name):
+            if name == records[1]["name"]:
+                raise OSError("access denied")
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("kill was not released")
+
+        backend.kill.side_effect = kill
+        try:
+            with patch.object(self.window, "_terminal_close_choice", return_value="end"), \
+                    patch("nodebridge.window.TmuxBackend", return_value=backend), \
+                    patch("nodebridge.window.QMessageBox.warning") as warning:
+                self.window._close_terminal_group(group)
+                self.assertTrue(entered.wait(2))
+                self.window._terminal_manager.close(sessions[0], unexpected=True)
+                release.set()
+                self._finish_background("_tmux_job")
+        finally:
+            release.set()
+            self._finish_background("_tmux_job")
+        self.assertEqual(backend.kill.call_count, 2)
+        self.assertNotIn(records[0]["key"], self.window._tmux_records)
+        self.assertEqual(records[0]["local_session"], "")
+        channels[0].close.assert_called_once()
+        channels[1].close.assert_not_called()
+        self.assertEqual(records[1]["local_session"], sessions[1])
+        self.assertEqual(terminal.group_sessions(group), [sessions[1]])
+        self.assertIn(other, terminal._sessions)
+        warning.assert_called_once()
+
+    def test_tmux_single_disconnect_button_ends_remote_session(self):
+        terminal, _group, sessions, channels, records = self._connected_persistent_pair()
+        backend = Mock()
+        terminal._show_tab(sessions[0])
+        with patch.object(self.window, "_terminal_close_choice", return_value="end"), \
+                patch("nodebridge.window.TmuxBackend", return_value=backend):
+            terminal.disconnectRequested.emit(sessions[0])
+            self._finish_background("_tmux_job")
+        backend.kill.assert_called_once_with(records[0]["name"])
+        self.assertNotIn(records[0]["key"], self.window._tmux_records)
+        channels[0].close.assert_called_once()
+        channels[1].close.assert_not_called()
+
+    def test_missing_tmux_does_not_open_a_plain_terminal(self):
+        root = Mock(config=NodeConfig("jump", 22, "alice"), _alias_route=())
+        self.window._session = root
+        self.window._sync_terminal_nodes()
+        self.window.terminal_workspace.persistent_mode.setChecked(True)
+        backend = Mock()
+        backend.create.side_effect = OSError("tmux 未安装")
+        with patch("nodebridge.window.TmuxBackend", return_value=backend), \
+                patch("nodebridge.window.QMessageBox.warning") as warning:
+            self.window.terminal_workspace.new_terminal_button.click()
+            self._finish_job()
+            warning.assert_called_once()
+            root.open_shell.assert_not_called()
+            backend.attach.assert_not_called()
+            self.assertEqual(self.window._persistent_sessions, {})
+
+    def test_persistent_members_rejoin_renamed_group_after_detach(self):
+        from nodebridge.tmux_session import RemoteTask
+        root = Mock(config=NodeConfig("jump", 22, "alice"), _alias_route=())
+        self.window._session = root
+        self.window.worker_browser.set_aliases(["cft02", "cft03"])
+        self.window._sync_terminal_nodes()
+        remote = {}
+        def factory(host, alias=None):
+            backend = Mock(route=(alias,))
+            def create(group, label):
+                task = RemoteTask("nodebridge-" + alias, "%0", "/work", "bash", 0, 123, group, label)
+                remote[alias] = task
+                return task
+            backend.create.side_effect = create
+            backend.scan.side_effect = lambda: [remote[alias]]
+            def attach(_task):
+                channel = Mock(closed=False)
+                channel.recv_ready.return_value = False
+                channel.exit_status_ready.return_value = False
+                return channel
+            backend.attach.side_effect = attach
+            return backend
+        terminal = self.window.terminal_workspace
+        terminal.persistent_mode.setChecked(True)
+        with patch("nodebridge.window.TmuxBackend", side_effect=factory), \
+                patch.object(self.window, "enable_resource_monitoring"):
+            self.window._connect_terminals(["worker:cft02", "worker:cft03"])
+            self._finish_job()
+            with patch("nodebridge.terminal_workspace.QInputDialog.getText", return_value=("计算A", True)):
+                terminal._rename_group()
+            keys = list(self.window._tmux_records)
+            for sid in list(self.window._persistent_sessions):
+                self.window._close_terminal(sid)
+            self.window._restore_tmux_tasks(keys)
+            deadline = time.monotonic() + 5
+            while (self.window._tmux_restore_queue or self.window._job is not None) and time.monotonic() < deadline:
+                self.app.processEvents()
+                time.sleep(0.01)
+            self._finish_job()
+            self.assertEqual(self.window._tmux_restore_queue, [])
+            groups = {terminal._sessions[sid].group_id for sid in self.window._persistent_sessions}
+            self.assertEqual(len(groups), 1)
+            group = terminal._groups[groups.pop()]
+            self.assertEqual(group.name, "计算A")
+            self.assertEqual(len(group.members), 2)
 
     def test_interrupt_broadcast_confirms_and_sends_once_per_node_in_current_group(self):
         terminal = self.window.terminal_workspace
@@ -1196,10 +1912,11 @@ class WindowTests(unittest.TestCase):
             target.list_directory.reset_mock()
             target.list_directory.side_effect = error
             browser.path_edit.setText(path)
-            with patch("nodebridge.window.QMessageBox.warning") as warning:
+            with patch.object(self.window, "_show_background_error") as warning:
                 browser._focus_item(browser.nodes.topLevelItem(0), 0)
                 self._finish_job()
                 warning.assert_called_once()
+                self.assertIn(str(error), warning.call_args.args[0])
             target.list_directory.assert_called_once_with(path)
 
     def test_batch_result_rows_match_file_table(self):
@@ -1542,6 +2259,7 @@ class WindowTests(unittest.TestCase):
         browser.path_edit.setText("/shared")
         listing = DirectoryListing("/shared", ())
         good = Mock()
+        good.sftp.stat.return_value.st_mode = stat.S_IFDIR
         good.open_sftp_peer.return_value = good
         good.list_directory.return_value = listing
         bad = Mock()

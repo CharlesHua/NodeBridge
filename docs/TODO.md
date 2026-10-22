@@ -6,9 +6,9 @@ Validate the Linux CPU/memory monitor on the real cluster, especially 50-node po
 
 在真实集群验证 Linux CPU／内存监控，重点测量 50 节点轮询耗时和 SSH 登录开销。根据负载再考虑可配置刷新间隔及监控开关；目前要求节点支持 Linux `/proc`。
 
-Design a persistent Task Workspace before implementing it. The proposed UI is a third tab beside Files and Terminal, plus a current-task selector shared across views; this layout is not yet confirmed. A named task should remember a direct site, selected indirect nodes, one common absolute working path with optional per-node overrides, local inputs, and task-first result destinations. Loading a task would fill the current Files view; connections and file operations would still require explicit user action. Settle how task snapshots and result manifests relate to later distribution, collection, verification, and cleanup before adding one-click orchestration. The owner deferred deciding whether task membership changes the default scope of batch file actions until Task Workspace implementation.
+Design the full computation Task Workspace before implementing it. A third Tasks tab now exists for persistent tmux sessions; extending it with a shared current-computation selector remains unconfirmed. A named computation should remember a direct site, selected indirect nodes, common working path with per-node overrides, local inputs, and task-first result destinations. Loading it would fill the Files view; connections and file operations would still require explicit action. Settle task snapshots and result manifests before one-click distribution, collection, verification, and cleanup. Whether task membership changes batch file-action scope remains deferred.
 
-先设计可保存的“任务工作区”，再实施。建议界面与“文件”“终端”并列为第三个标签页，并在各视图共用当前任务选择器；此布局尚未最终确认。按任务名称记录直连站点、间接节点、共同绝对工作路径及可选的逐节点覆盖、本地输入和以任务为先的结果位置。加载任务时填充现有文件界面；连接和文件操作仍由用户明确触发。实施一键流程前，先确定任务快照与结果清单如何关联后续的分发、汇集、核对及清理。任务成员是否改变批量文件操作的默认范围，项目所有者决定留待实现任务工作区时再讨论。
+完整计算“任务工作区”仍须先设计再实施。第三个“任务”页现已用于 tmux 持久会话，扩展为跨视图共用的当前计算任务选择器尚未确认。按计算任务名称保存直连站点、间接节点、共同工作路径及逐节点覆盖、本地输入和以任务为先的结果位置。加载后填充文件界面，连接和文件操作仍由用户明确触发。实施一键分发、汇集、核对及清理前，先确定任务快照与结果清单。任务成员是否改变批量文件操作范围仍留待讨论。
 
 Automatic background SHA-256 checking now starts after merged-directory refresh and uses separate connections from file operations. A 60-second metadata-based cache reduces repeated work but cannot prove unchanged bytes when external tools preserve size and timestamps. Validate runtime and server load on the owner's cluster, especially for large files; agree on a large-file policy, explicit pause and force-recheck controls, and cache duration. Verify `sha256sum -z` availability, unusual filenames, per-node errors, and two-command jump-channel capacity live. Decide whether a fallback is needed on hosts without that command.
 
@@ -52,9 +52,9 @@ Verify multi-group connection capacity, group isolation, terminal-only jump reco
 
 在项目所有者的集群上验证多组连接容量、组间隔离、终端专用跳板连接重试、Tab 补全和无害的 `ls` 广播。所有者曾在打开 cft15–21 时看到 `ChannelException(2, 'Connect failed')`；新增的有限次重试目前只有本地模拟测试。若仍失败，应记录服务器返回的准确错误。
 
-Multiple nodes can already hold simultaneous Shell channels, and one node can have several terminals. Closing an individual terminal tab hides its widget while the SSH channel stays open and can be shown again from the node tree. **Still planned:** true remote-session persistence across SSH disconnection and application restart. Evaluate remote `tmux`, GNU screen, another session manager, or an application-managed equivalent; a hidden SSH channel alone is not persistent. Distinguish hiding a view, detaching a remote session, disconnecting SSH, and terminating the remote process.
+Optional remote tmux persistence is implemented, with local metadata, independent background discovery, and task-table multi-selection for batch restoration, detachment and confirmed termination; see [TMUX.md](TMUX.md). Still verify real multi-node SSH, connection loss, application restart, Conda/working-directory checks and broadcasts on the cluster. Expand recovery coverage for terminal modes, mouse/bracketed paste and full-screen programs, and verify the next portable build. Full job exit-status tracking, scheduler integration, tmux split/window management, and bulk restoration of an entire saved group remain future work.
 
-目前已能同时保留多个节点的 Shell 通道，同一节点也能打开多个终端。关闭单个终端标签只隐藏控件，SSH 通道仍保持活动，并可从节点树重新显示。**仍待实现：**SSH 断开和应用重启后的真正远程会话持久化。需评估远端 `tmux`、GNU screen、其他会话管理器或由程序管理的等价机制；隐藏 SSH 通道不等于持久化。应区分隐藏视图、分离远程会话、断开 SSH 与终止远端进程。
+已实现可选远程 tmux 持久化、本地元数据、独立后台发现，以及任务表多选的批量恢复、分离及经确认结束，见 [TMUX.md](TMUX.md)。仍需在集群验证真实多节点 SSH、断网、软件重启、Conda／目录检查和广播；补充终端模式、鼠标／括号粘贴及全屏应用恢复覆盖，验证下一次绿色版。完整计算退出状态、调度系统集成、tmux 分屏／多窗口管理及整组一键恢复仍是后续工作。
 
 The multi-node command broadcast action sends one command to selected terminals within one active Terminal Group, at most one per node. Each node keeps its own output stream and session state. Common destructive commands trigger an extra confirmation. Future work includes reliable per-command exit status and broader safeguards. Terminal logic stays separate from GUI presentation.
 
@@ -62,9 +62,9 @@ The multi-node command broadcast action sends one command to selected terminals 
 
 ### Completed core — Terminal Groups and group-scoped broadcast / 已完成基础功能：终端分组与组内广播
 
-Each successfully opened batch of selected nodes now creates a `Terminal Group`. A later batch creates another group even when node names overlap. Groups have run-local stable IDs, names, member sessions, and selected recipients; switching groups clears the broadcast draft. Group state is not persisted across application restarts.
+Each successfully opened batch creates a `Terminal Group`. Later batches create separate groups even when node names overlap. Groups have run-local IDs and recipient selections; switching groups clears the draft. Optional tmux sessions save a remote group key and name so individually restored members can rejoin; ordinary groups and exact recipient checkbox selections remain run-local.
 
-每次成功为一批选中节点打开终端时，都会创建一个 `Terminal Group`；之后批次即使包含相同节点，也会形成新组。组具有本次运行内稳定的 ID、名称、成员会话和已选目标；切换组会清空广播草稿。组状态不会在应用重启后保留。
+每次成功连接批次创建一个 `Terminal Group`，后续批次即使节点重叠也会独立分组。组 ID 和广播目标选择属于本次运行，切换组清空草稿。可选 tmux 会话保存远程组标识及名称，逐个恢复成员时可重新归组；普通组及精确的广播勾选状态仍只在本次运行内保留。
 
 Broadcast now targets **exactly one active group** and rejects sessions outside it. The Terminal tab shows the group and its selectable member sessions; the broadcast summary shows the active group and receiving nodes. No mode checkbox is needed; switching groups clears the draft. Common destructive commands require a separate confirmation. There is no implicit global broadcast; any future cross-group feature would need a separate, explicit design. Command-pattern detection is only a safeguard, not a complete Shell parser.
 
@@ -105,7 +105,7 @@ After the core group workflow is stable, consider showing effectively identical 
 7. 阶段 6：多节点并行复制分发、按后缀拖动汇集及经确认的删除——一次最多并行处理四个节点任务，节点总数不限制为四个；传输队列、任务重试和多来源移动仍待实现。
 8. 阶段 7：健壮性与交互完善——进行中。
 9. 阶段 8：带 PTY 的交互式 SSH 远程终端及本地 xterm.js 全屏仿真——已实现；仍需集群实测。
-10. 阶段 9：多个节点的终端同时运行——已实现；可分离且持久的远程会话仍待实现。
+10. 阶段 9：多个节点的终端同时运行——已实现；可选 tmux 分离／恢复已实现，仍需真实集群及新绿色版验收。
 11. 阶段 10：明确标示的多节点命令广播基本功能已实现；逐命令退出状态及更多节点协同功能仍待实现。
 12. 阶段 11：Terminal Group 与严格组内广播已实现；相同结果合并显示（优先级 B）仍待实现。
 13. 最后的发行阶段：优先提供自包含的免安装 Windows 绿色版，无需安装器或预装 Python；安装版可在以后考虑。

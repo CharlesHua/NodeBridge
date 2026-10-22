@@ -6,6 +6,7 @@ import unittest
 os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu --no-sandbox")
 
 from PySide6.QtCore import QEventLoop, QTimer, Qt
+from PySide6.QtGui import QColor
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -45,6 +46,26 @@ class RemoteTerminalWidgetTests(unittest.TestCase):
         self.widget.page().runJavaScript(expression, values.append)
         self.assertTrue(self._wait_until(lambda: bool(values)))
         return values[0]
+
+    def test_initial_frame_is_dark_and_buffered_output_arrives_together(self):
+        self.widget.close()
+        self.widget.deleteLater()
+        self.app.processEvents()
+        self.widget = RemoteTerminalWidget()
+        self.widget.resize(700, 350)
+        self.assertFalse(self.widget._load_started)
+        self.assertEqual(self.widget.page().backgroundColor(), QColor("#0c0c0c"))
+        delivered = []
+        self.widget._bridge.output.connect(delivered.append)
+        self.widget.write("first output\r\n")
+        self.widget.write("second output\r\n")
+        self.widget.show()
+        frame = self.widget.grab().toImage()
+        self.assertEqual(frame.pixelColor(frame.width() // 2, frame.height() // 2), QColor("#0c0c0c"))
+        self.assertTrue(self._wait_until(lambda: self.widget._ready, 7000))
+        self.assertEqual(delivered, ["first output\r\nsecond output\r\n"])
+        self.assertTrue(self._wait_until(lambda: self._evaluate(
+            "nodebridgeTerminal.buffer.active.getLine(1).translateToString(true)") == "second output"))
 
     def test_pty_output_keeps_ansi_and_rewrites_progress_lines(self):
         self.widget.write("qt | 0%\r\nprompt | 0%\r\n")

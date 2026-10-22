@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QUrl, Signal, Slot
+from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineCore import QWebEnginePage
 from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -78,6 +79,13 @@ class RemoteTerminalWidget(QWebEngineView):
         self._pending_output: list[str] = []
         self._size = (100, 30)
         self.setPage(_TerminalPage(self))
+        # Match the HTML/xterm background before Chromium paints its first page.
+        background = QColor("#0c0c0c")
+        self.page().setBackgroundColor(background)
+        palette = self.palette()
+        palette.setColor(QPalette.ColorRole.Window, background)
+        palette.setColor(QPalette.ColorRole.Base, background)
+        self.setPalette(palette)
         self._bridge = _TerminalBridge(self)
         self._channel = QWebChannel(self.page())
         self._channel.registerObject("terminalBridge", self._bridge)
@@ -146,8 +154,8 @@ class RemoteTerminalWidget(QWebEngineView):
         self._ready = True
         self._bridge.inputEnabled.emit(self._input_enabled)
         self._set_size(columns, rows)
-        for text in self._pending_output:
-            self._bridge.output.emit(text)
+        if self._pending_output:
+            self._bridge.output.emit("".join(self._pending_output))
         self._pending_output.clear()
         self._bridge.fitRequested.emit()
         if self._focus_when_ready and self.isVisible():

@@ -1,5 +1,9 @@
 # Developer guide / 开发者指南
 
+For the optional tmux backend, session ownership, protocol adapter and opt-in live tests, read [TMUX.md](TMUX.md). The Tasks tab currently inventories persistent terminal sessions; the full computation/file workflow workspace remains planned.
+
+可选 tmux 后端、会话生命周期、协议适配及显式启用的实测见 [TMUX.md](TMUX.md)。“任务”页当前管理持久终端会话；完整计算／文件流程工作区仍在规划中。
+
 This guide is for the project owner and coding agents. The end-user instructions are in [USER_GUIDE.md](USER_GUIDE.md) and are shown in the application's **Help → User guide** menu. Keep that guide in Chinese and focused on observable behavior. Keep the GitHub [README](../README.md) short. Read [AGENTS.md](../AGENTS.md) before changes; [ARCHITECTURE.md](ARCHITECTURE.md), [CURRENT_STATUS.md](CURRENT_STATUS.md), [DECISIONS.md](DECISIONS.md), and [TODO.md](TODO.md) hold the detailed design, implementation boundary, settled choices, and planned work.
 
 本指南面向项目作者与编码 Agent。最终用户说明见 [USER_GUIDE.md](USER_GUIDE.md)，也可从程序“帮助 → 使用指南”打开。该指南保持纯中文，只描述用户能观察到的行为；GitHub 首页的 [README](../README.md) 保持简洁。修改前先读 [AGENTS.md](../AGENTS.md)；详细架构、实现边界、已定选择和待办分别见 [ARCHITECTURE.md](ARCHITECTURE.md)、[CURRENT_STATUS.md](CURRENT_STATUS.md)、[DECISIONS.md](DECISIONS.md) 与 [TODO.md](TODO.md)。

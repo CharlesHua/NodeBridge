@@ -13,6 +13,7 @@ import tempfile
 import time
 import threading
 import uuid
+from contextlib import closing
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -51,6 +52,8 @@ from PySide6.QtWidgets import (
 )
 
 from nodebridge.local_browser import LocalBrowser
+from nodebridge.layout_settings import LayoutSettings
+from nodebridge.qt_rendering import prepare_terminal_rendering
 from nodebridge.portable import default_settings
 from nodebridge.activity_log import ActivityLog
 from nodebridge.batch import BatchResult, compact_node_aliases, run_parallel, source_snapshot
@@ -89,6 +92,8 @@ from nodebridge.transfer import (
 )
 from nodebridge.terminal_workspace import ANSI_ESCAPE, PLAIN_PROMPT, TerminalWorkspace
 from nodebridge.terminal_session import TerminalManager
+from nodebridge.tmux_session import TmuxBackend, TmuxChannel, endpoint_key, task_dict
+from nodebridge.tasks_workspace import TasksWorkspace, load_tasks, save_tasks
 from nodebridge.worker_browser import WorkerBrowser
 
 
@@ -106,6 +111,7 @@ class ConflictPrompt:
     info: ConflictInfo
     done: threading.Event = field(default_factory=threading.Event)
     action: ConflictAction = ConflictAction.CANCEL
+    choices: dict | None = None
 
 
 @dataclass
@@ -216,12 +222,17 @@ class MainWindow(QMainWindow):
 
     def __init__(self, settings: QSettings | None = None, *, log_path: Path | None = None):
         super().__init__()
+        self._terminal_render_surface = prepare_terminal_rendering(self)
         self.setWindowTitle("NodeBridge — 多节点文件浏览")
         self.resize(1550, 850)
         self._settings = settings if settings is not None else default_settings()
         self._session: RemoteSession | None = None
         self._job: JobThread | None = None
         self._copy_job: JobThread | None = None
+        self._file_tasks: dict[JobThread, frozenset[str]] = {}
+        self._file_copy_tasks: set[JobThread] = set()
+        self._remote_browse_job: JobThread | None = None
+        self._worker_browse_job: JobThread | None = None
         self._on_job_success: Callable[[object], None] | None = None
         self._active_log_index: int | None = None
         self._log_result: Callable[[object], tuple[str, str]] | None = None
@@ -242,6 +253,13 @@ class MainWindow(QMainWindow):
         self._jump_helpers: list[RemoteSession] = []
         self._terminal_jump_helpers: list[RemoteSession] = []
         self._terminal_hosts: dict[str, RemoteSession] = {}
+        self._tmux_job: JobThread | None = None
+        self._tmux_scan_job: JobThread | None = None
+        self._tmux_restore_queue: list[str] = []
+        self._tmux_cancel = threading.Event()
+        self._tmux_records = load_tasks(self._settings)
+        self._persistent_sessions = {}
+        self._tmux_group_links = {}
         self._terminal_helper_reservations: set[int] = set()
         self._jump_password: str | None = None
         self._pending_worker_discovery = False
@@ -372,7 +390,7 @@ class MainWindow(QMainWindow):
         self.terminal_workspace = TerminalWorkspace()
         self.terminal_workspace.set_commands(load_commands(self._settings))
         self.terminal_workspace.connectRequested.connect(self._connect_terminal)
-        self.terminal_workspace.disconnectRequested.connect(self._close_terminal)
+        self.terminal_workspace.disconnectRequested.connect(self._request_close_terminal)
         self.terminal_workspace.connectManyRequested.connect(self._connect_terminals)
         self.terminal_workspace.disconnectManyRequested.connect(self._close_terminals)
         self.terminal_workspace.disconnectGroupRequested.connect(self._close_terminal_group)
@@ -384,6 +402,22 @@ class MainWindow(QMainWindow):
         self._terminal_manager.terminalClosed.connect(self._terminal_closed)
         self._terminal_manager.inputFailed.connect(self._terminal_input_failed)
         self.workspace_tabs.addTab(self.terminal_workspace, "终端")
+        self.terminal_workspace.persistent_mode.setChecked(
+            self._settings.value("terminal/persistent_mode", False, type=bool))
+        self.terminal_workspace.persistent_mode.toggled.connect(
+            lambda checked: self._settings.setValue("terminal/persistent_mode", checked))
+        self.terminal_workspace.groupRenamed.connect(self._rename_persistent_group)
+        self.terminal_workspace.recoverPersistentRequested.connect(self._show_persistent_tasks)
+        self.tasks_workspace = TasksWorkspace()
+        self.tasks_workspace.scanRequested.connect(self._scan_tmux_tasks)
+        self.tasks_workspace.restoreRequested.connect(self._restore_tmux_task)
+        self.tasks_workspace.detachRequested.connect(self._detach_tmux_task)
+        self.tasks_workspace.terminateRequested.connect(self._terminate_tmux_task)
+        self.tasks_workspace.restoreManyRequested.connect(self._restore_tmux_tasks)
+        self.tasks_workspace.detachManyRequested.connect(self._detach_tmux_tasks)
+        self.tasks_workspace.terminateManyRequested.connect(self._terminate_tmux_tasks)
+        self.workspace_tabs.addTab(self.tasks_workspace, "任务")
+        self._refresh_tmux_tasks()
         self.workspace_tabs.currentChanged.connect(self._workspace_changed)
         self.workspace_splitter = QSplitter(Qt.Orientation.Vertical)
         self.workspace_splitter.setChildrenCollapsible(False)
@@ -522,6 +556,23 @@ class MainWindow(QMainWindow):
         self._completion_timer.setSingleShot(True)
         self._completion_timer.timeout.connect(self.completion_toast.hide)
         self._update_controls()
+        self._layout_settings = LayoutSettings(self, self._settings, {
+            "workspace": self.workspace_splitter,
+            "files": panes,
+            "local": self.local.content_splitter,
+            "remote": self.remote_splitter,
+            "workers": self.worker_browser.findChild(QSplitter),
+            "terminal": self.terminal_workspace.findChild(QSplitter),
+        }, {
+            "local_columns": self.local_table.horizontalHeader(),
+            "remote_columns": self.table.horizontalHeader(),
+            "worker_columns": self.worker_browser.table.horizontalHeader(),
+            "worker_nodes": self.worker_browser.nodes.header(),
+            "terminal_nodes": self.terminal_workspace.node_tree.header(),
+            "terminal_groups": self.terminal_workspace.group_tree.header(),
+            "task_columns": self.tasks_workspace.table.horizontalHeader(),
+            "batch_columns": self.batch_results.horizontalHeader(),
+        })
 
     def _terminal_sources(self) -> dict[str, tuple[str, RemoteSession]]:
         sources = {}
@@ -537,11 +588,23 @@ class MainWindow(QMainWindow):
                 display_name(self._session, host or self.host.text().strip() or "当前站点"), self._session,
             )
         sources.update((f"worker:{alias}", (alias, session)) for alias, session in self._workers.items())
+        root = self._parents[0][0] if self._parents else self._session
+        if root is not None:
+            for record in self._tmux_records.values():
+                if (record.get("local_session") and len(record["route"]) > 1
+                        and (record["host"], record["port"], record["user"]) == endpoint_key(root.config)[:3]):
+                    sources[self._tmux_route_node(record["route"])] = (record["node"], root)
         return sources
+
+    @staticmethod
+    def _tmux_route_node(route):
+        return "tmux-route:" + uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(list(route))).hex
 
     def _workspace_changed(self, _index):
         if self.workspace_tabs.currentWidget() is self.terminal_workspace:
             self.enable_resource_monitoring()
+        elif self.workspace_tabs.currentWidget() is self.tasks_workspace and self._session is not None:
+            self._scan_tmux_tasks()
 
     def enable_resource_monitoring(self):
         if not self._resource_timer.isActive():
@@ -631,21 +694,303 @@ class MainWindow(QMainWindow):
     def _connect_terminal(self, node_id: str) -> None:
         self._connect_terminals([node_id])
 
-    def _connect_terminals(self, node_ids: list[str]) -> None:
+    def _refresh_tmux_tasks(self, save=False):
+        if save:
+            save_tasks(self._settings, self._tmux_records.values())
+        self.tasks_workspace.set_records(list(self._tmux_records.values()))
+        self.tasks_workspace.set_busy(self._job is not None or self._tmux_job is not None,
+                                      self._session is not None)
+        self.tasks_workspace.set_scanning(self._tmux_scan_job is not None)
+
+    def _forget_tmux_record(self, key):
+        # Only called after successful termination or a successful absence check.
+        record = self._tmux_records.get(key)
+        if record is not None:
+            if record.get("local_session"):
+                self._close_terminal(record["local_session"])
+            self._tmux_records.pop(key, None)
+
+    def _remember_tmux_task(self, config, route, task, node):
+        identity = json.dumps([config.host, config.port, config.username, list(route), task.name])
+        key = uuid.uuid5(uuid.NAMESPACE_URL, identity).hex
+        previous = self._tmux_records.get(key, {})
+        local = previous.get("local_session", "")
+        if local and not self._terminal_manager.has_session(local):
+            local = ""
+        record = dict(task_dict(task), key=key, host=config.host, port=config.port,
+                      user=config.username, route=list(route), node=node, local_session=local,
+                      label=previous.get("label") or task.label,
+                      state="窗格已退出" if task.dead else "本机已连接" if local else
+                      "远端有其他客户端" if task.attached else "可恢复", detail="已查询远程 tmux 会话。")
+        previous.update(record)
+        self._tmux_records[key] = previous
+        return previous
+
+    def _show_persistent_tasks(self):
+        self.workspace_tabs.setCurrentWidget(self.tasks_workspace)
+        if self._session is not None:
+            self._scan_tmux_tasks()
+
+    def _rename_persistent_group(self, group_id, name):
+        for session_id in self.terminal_workspace.group_sessions(group_id):
+            record = self._tmux_records.get(self._persistent_sessions.get(session_id))
+            if record is not None:
+                for other in self._tmux_records.values():
+                    if (other is record or record.get("group") and other.get("group") == record.get("group")
+                            and other["host"] == record["host"]):
+                        other["label"] = name
+        self._refresh_tmux_tasks(save=True)
+
+    def _tmux_root(self, record=None):
+        root = self._parents[0][0] if self._parents else self._session
+        if root is None:
+            raise ValueError("请先连接对应的直连站点。")
+        if record and endpoint_key(root.config)[:3] != (record["host"], record["port"], record["user"]):
+            root = next((source for _label, source in self._terminal_sources().values()
+                         if endpoint_key(source.config)[:3] == (record["host"], record["port"], record["user"])), None)
+            if root is None:
+                raise ValueError(f"请先连接站点 {record['user']}@{record['host']}:{record['port']}。")
+        return root
+
+    def _scan_tmux_tasks(self):
+        if self._tmux_scan_job is not None:
+            return
+        try:
+            root = self._tmux_root()
+        except ValueError as exc:
+            QMessageBox.information(self, "持久终端", str(exc))
+            return
+        config, password = root.config, self._jump_password
+        cancel = threading.Event()
+        self._tmux_cancel = cancel
+        snapshot = {key: dict(record) for key, record in self._tmux_records.items()}
+        routes = {()}
+        routes.update((alias,) for alias in self.worker_browser.known_aliases()
+                      if alias in self._workers or self.worker_browser._probe_status.get(alias, ("", ""))[0] == "reachable")
+        routes.update(tuple(record["route"]) for record in self._tmux_records.values()
+                      if (record["host"], record["port"], record["user"]) == endpoint_key(config)[:3])
+        def work():
+            if cancel.is_set():
+                return []
+            helper = RemoteSession.connect_shell_host(config, password)
+            try:
+                def one(route):
+                    if cancel.is_set():
+                        return route, [], "查询已取消"
+                    backend = TmuxBackend(helper, cancel=cancel)
+                    backend.route = route
+                    try:
+                        return route, backend.scan(), ""
+                    except Exception as exc:
+                        return route, [], f"{type(exc).__name__}: {exc}"
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    return list(pool.map(one, sorted(routes)))
+            finally:
+                helper.close()
+        def success(results):
+            if cancel.is_set():
+                return
+            if self._session is not root and (not self._parents or self._parents[0][0] is not root):
+                return
+            failures = []
+            for route, tasks, error in results:
+                relevant = [r for r in self._tmux_records.values()
+                            if (r["host"], r["port"], r["user"]) == endpoint_key(config)[:3]
+                            and tuple(r["route"]) == route]
+                # Attach/detach/termination may have changed a record while this
+                # read-only scan was in flight. Never overwrite those newer states.
+                changed_names = {r["name"] for r in relevant if r != snapshot.get(r["key"])}
+                changed_names.update(r["name"] for key, r in snapshot.items()
+                    if key not in self._tmux_records and tuple(r["route"]) == route
+                    and (r["host"], r["port"], r["user"]) == endpoint_key(config)[:3])
+                relevant = [r for r in relevant if r["name"] not in changed_names]
+                if error:
+                    for record in relevant:
+                        record.update(state="查询失败", detail=error)
+                    failures.append(f"{' → '.join(route) or config.host}：{error}")
+                    continue
+                names = {task.name for task in tasks}
+                for record in relevant:
+                    if record["name"] not in names:
+                        self._forget_tmux_record(record["key"])
+                for task in tasks:
+                    if task.name in changed_names:
+                        continue
+                    root_name = getattr(root, "display_hostname", None)
+                    root_name = root_name if isinstance(root_name, str) and root_name else config.host
+                    self._remember_tmux_task(config, route, task,
+                                             " → ".join(route) or root_name)
+            self._refresh_tmux_tasks(save=True)
+            self.tasks_workspace.summary.setText(f"扫描完成：{len(results) - len(failures)}/{len(results)} 个节点查询成功。")
+            self.tasks_workspace.summary.setToolTip("")
+            if failures:
+                logging.getLogger(__name__).warning("tmux 节点查询失败：%s", "；".join(failures))
+                self.tasks_workspace.summary.setToolTip("\n".join(failures))
+        self.tasks_workspace.summary.setText("正在后台扫描持久终端，可继续其他操作…")
+        self._run(work, success, "正在后台扫描持久终端…", background_slot="_tmux_scan_job",
+                  log_action="扫描 tmux 持久终端", log_category="terminal",
+                  log_result=lambda value: ("部分完成" if any(row[2] for row in value) else "成功",
+                                            "；".join(f"{' → '.join(route) or config.host}: {error}" for route, _, error in value if error)))
+
+    def _restore_tmux_task(self, key):
+        record = self._tmux_records.get(key)
+        if record is None or self._job is not None or self._tmux_job is not None:
+            return
+        local = record.get("local_session")
+        if local and self._terminal_manager.has_session(local):
+            self.workspace_tabs.setCurrentWidget(self.terminal_workspace)
+            self.terminal_workspace._show_tab(local)
+            return
+        try:
+            root = self._tmux_root(record)
+            if record.get("attached", 0) > 0:
+                choice = QMessageBox.question(self, "会话已有客户端",
+                    "这个远程会话已有客户端连接，继续连接后输入会共享。\n是否继续？不会断开其他客户端。",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+                if choice != QMessageBox.StandardButton.Yes:
+                    return
+            route = record["route"]
+            if len(route) > 1:
+                node_id = self._tmux_route_node(route)
+            elif route:
+                node_id = f"worker:{route[0]}"
+                if route[0] not in self.worker_browser.known_aliases():
+                    self.worker_browser.set_aliases([*self.worker_browser.known_aliases(), route[0]])
+            else:
+                node_id = f"primary:{id(root)}"
+            self._sync_terminal_nodes()
+            if len(route) > 1:
+                self.terminal_workspace.set_nodes([*self.terminal_workspace._nodes.items(), (node_id, record["node"])])
+            self.workspace_tabs.setCurrentWidget(self.terminal_workspace)
+            self._connect_terminals([node_id], persistent=True, restore_tasks={node_id: record})
+        except ValueError as exc:
+            QMessageBox.warning(self, "恢复持久终端", str(exc))
+
+    def _detach_tmux_task(self, key):
+        record = self._tmux_records.get(key)
+        if record and record.get("local_session"):
+            self._close_terminal(record["local_session"])
+
+    def _restore_tmux_tasks(self, keys):
+        if self._job is not None or self._tmux_job is not None or self._tmux_restore_queue:
+            return
+        self._tmux_restore_queue = list(dict.fromkeys(keys))
+        self._continue_tmux_restore()
+
+    def _continue_tmux_restore(self):
+        if self._job is not None or self._tmux_job is not None:
+            self._tmux_restore_queue.clear()
+            return
+        while self._tmux_restore_queue:
+            self._restore_tmux_task(self._tmux_restore_queue.pop(0))
+            if self._job is not None:
+                self._job.finished.connect(lambda: QTimer.singleShot(0, self._continue_tmux_restore))
+                return
+
+    def _detach_tmux_tasks(self, keys):
+        for key in list(dict.fromkeys(keys)):
+            self._detach_tmux_task(key)
+
+    def _terminate_tmux_task(self, key):
+        self._terminate_tmux_tasks([key])
+
+    def _terminate_tmux_tasks(self, keys):
+        if self._job is not None or self._tmux_job is not None:
+            return
+        records = [self._tmux_records[key] for key in dict.fromkeys(keys) if key in self._tmux_records]
+        if not records:
+            return
+        try:
+            targets = [(r, self._tmux_root(r), tuple(r["route"]), r["name"]) for r in records]
+        except ValueError as exc:
+            QMessageBox.warning(self, "结束远程会话", str(exc))
+            return
+        names = "\n".join(f"{r['node']} / {r['name']}" for r in records)
+        answer = QMessageBox.question(self, "结束远程 tmux 会话",
+            f"永久结束所选 {len(records)} 个远程会话？\n{names}\n这可能终止其中的程序，之后无法恢复。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        def work():
+            ended, errors = [], []
+            for record, root, route, name in targets:
+                try:
+                    backend = TmuxBackend(root)
+                    backend.route = route
+                    backend.kill(name)
+                    ended.append(record["key"])
+                except Exception as exc:
+                    errors.append(f"{record['node']} / {name}: {type(exc).__name__}: {exc}")
+            return ended, errors
+        def success(result):
+            ended, errors = result
+            for record in records:
+                if record["key"] in ended:
+                    self._forget_tmux_record(record["key"])
+            self._refresh_tmux_tasks(save=True)
+            if errors:
+                QMessageBox.warning(self, "部分会话未能结束", "\n".join(errors))
+        self._run(work, success, "正在结束远程 tmux 会话…", background_slot="_tmux_job",
+                  log_action=f"结束 tmux 会话（{len(records)} 个）", log_category="terminal",
+                  log_result=lambda result: ("部分完成" if result[1] and result[0] else "失败" if result[1] else "成功",
+                      f"{len(result[0])}/{len(records)} 个会话已结束" + ("；" + "；".join(result[1]) if result[1] else "")))
+
+    def _connect_terminals(self, node_ids: list[str], *, persistent=None, restore_tasks=None) -> None:
         if self._job is not None or not node_ids:
             return
         sources = self._terminal_sources()
+        for node_id, record in (restore_tasks or {}).items():
+            if node_id.startswith("tmux-route:"):
+                sources[node_id] = (record["node"], self._parents[0][0] if self._parents else self._session)
         available = set(sources) | {f"worker:{alias}" for alias in self.worker_browser.known_aliases()}
         node_ids = list(dict.fromkeys(node_id for node_id in node_ids if node_id in available))
         if not node_ids:
             return
+        persistent = self.terminal_workspace.persistent_mode.isChecked() if persistent is None else persistent
+        restore_tasks = restore_tasks or {}
+        remote_group = (next(iter(restore_tasks.values())).get("group") or next(iter(restore_tasks.values()))["name"]) if restore_tasks else uuid.uuid4().hex
+        remote_label = (next(iter(restore_tasks.values())).get("label", "") if restore_tasks
+                        else f"终端组{self.terminal_workspace._next_group}")
         jump = self._parents[0][0] if self._parents else self._session
         terminal_hosts = list(self._terminal_hosts.values())
         worker_hosts = list(self._worker_jumps.values())
         existing_helpers = list(self._terminal_jump_helpers)
         self._terminal_helper_reservations.update(id(host) for host in existing_helpers)
+        prepared_tasks = {}
 
         def open_one(node_id: str, host: RemoteSession | None):
+            if persistent:
+                shell_host = None
+                if node_id.startswith("worker:"):
+                    if host is None:
+                        raise ConnectionError("请先连接直连节点。")
+                    backend = TmuxBackend(host, node_id.removeprefix("worker:"))
+                else:
+                    source = sources[node_id][1]
+                    if source is jump and isinstance(source, RemoteSession) and not source._alias_route:
+                        shell_host = RemoteSession.connect_shell_host(source.config, self._jump_password)
+                    backend = TmuxBackend(shell_host or source)
+                if node_id in restore_tasks:
+                    backend.route = tuple(restore_tasks[node_id]["route"])
+                try:
+                    if node_id in restore_tasks:
+                        name = restore_tasks[node_id]["name"]
+                        task = next((task for task in backend.scan() if task.name == name), None)
+                        if task is None:
+                            raise OSError("远程会话已不存在；恢复不会重新创建或重新执行任务。")
+                    elif node_id in prepared_tasks:
+                        task = prepared_tasks[node_id]
+                    else:
+                        task = backend.create(remote_group, remote_label)
+                        prepared_tasks[node_id] = task
+                    channel = backend.attach(task)
+                    channel.tmux_task = task
+                    channel.tmux_route = backend.route
+                    return channel, shell_host, ""
+                except Exception:
+                    if shell_host is not None:
+                        shell_host.close()
+                    raise
             if node_id.startswith("worker:"):
                 if host is None:
                     raise ConnectionError("请先连接直连节点。")
@@ -780,7 +1125,15 @@ class MainWindow(QMainWindow):
             self._terminal_jump_helpers.extend(helpers)
             ready = [node_id for node_id in node_ids
                      if node_id in channels and self.terminal_workspace.has_node(node_id)]
-            group_id = self.terminal_workspace.create_group(ready) if ready else None
+            link = (jump.config.host, jump.config.port, jump.config.username, remote_group) if persistent else None
+            group_id = self._tmux_group_links.get(link) if link else None
+            if group_id not in self.terminal_workspace._groups:
+                group_id = self.terminal_workspace.create_group(ready) if ready else None
+                if persistent and group_id:
+                    self._tmux_group_links[link] = group_id
+                    if restore_tasks and remote_label:
+                        self.terminal_workspace._groups[group_id].name = remote_label[:24]
+                        self.terminal_workspace._refresh_groups(select=group_id)
             if group_id is not None and len(ready) > 1:
                 self.terminal_workspace.show_group_combined(group_id)
             for node_id in node_ids:
@@ -791,12 +1144,27 @@ class MainWindow(QMainWindow):
                     channel.close()
                     continue
                 session_id = self.terminal_workspace.add_terminal(
-                    node_id, group_id=group_id, activate=len(ready) == 1
+                    node_id, group_id=group_id, activate=len(ready) == 1, persistent=persistent
                 )
                 if node_id in banners:
                     notice = banners[node_id].replace("\r\n", "\n").replace("\n", "\r\n")
                     self.terminal_workspace.append_output(session_id, notice.rstrip("\r\n") + "\r\n")
+                if isinstance(channel, TmuxChannel):
+                    screen, prompt = channel.take_initial_screen()
+                    view = self.terminal_workspace._views[session_id]
+                    view.output.write(screen)
+                    view._recent_output = prompt
                 self._terminal_manager.add(session_id, node_id, channel)
+                if persistent:
+                    task = channel.tmux_task
+                    route = channel.tmux_route
+                    source = sources.get(node_id, ("", jump))[1]
+                    config = jump.config if route else source.config
+                    record = self._remember_tmux_task(config, route, task,
+                                                     self.terminal_workspace.node_label(node_id))
+                    record["local_session"] = session_id
+                    record["state"] = "本机已连接"
+                    self._persistent_sessions[session_id] = record["key"]
                 if node_id.startswith("worker:"):
                     self._node_connected(node_id.removeprefix("worker:"))
                 if assigned[node_id] is not None:
@@ -804,6 +1172,13 @@ class MainWindow(QMainWindow):
                 size = self.terminal_workspace.terminal_size(session_id)
                 if size is not None:
                     self._terminal_manager.resize(session_id, *size)
+            if persistent:
+                for node_id, error in errors.items():
+                    if node_id in restore_tasks:
+                        restore_tasks[node_id].update(state="恢复失败", detail=error)
+                if group_id and len(self.terminal_workspace._groups[group_id].members) > 1:
+                    self.terminal_workspace.show_group_combined(group_id)
+                self._refresh_tmux_tasks(save=True)
             self.status.setText(
                 f"SSH Shell：连接 {len(channels)} 个，失败 {len(errors)} 个；Enter 可发送命令。"
             )
@@ -841,15 +1216,101 @@ class MainWindow(QMainWindow):
         )
 
     def _close_terminal(self, session_id: str) -> None:
+        persistent = session_id in self._persistent_sessions
         self._terminal_manager.close(session_id)
         self.terminal_workspace.remove_terminal(session_id)
-        self.status.setText("终端连接已关闭。")
+        self.status.setText("持久终端已分离；远程会话保留，可在任务页检查和恢复。" if persistent else "终端连接已关闭。")
+
+    def _terminal_close_choice(self, title: str, count: int) -> str:
+        box = QMessageBox(self)
+        box.setWindowTitle(title)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText(f"所选 {count} 个终端包含 tmux 持久会话，请选择处理方式。")
+        box.setInformativeText("永久结束会销毁远程 tmux 会话，可能终止其中的程序，之后无法恢复。\n"
+                               "分离连接会关闭本地连接，保留远程 tmux 会话，可在任务页恢复。\n"
+                               "若包含普通终端，其连接也会关闭，但不支持恢复。")
+        end = box.addButton("永久结束会话", QMessageBox.ButtonRole.DestructiveRole)
+        detach = box.addButton("分离连接", QMessageBox.ButtonRole.ActionRole)
+        cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(cancel)
+        box.exec()
+        return "end" if box.clickedButton() is end else "detach" if box.clickedButton() is detach else "cancel"
+
+    def _request_close_terminal(self, session_id: str) -> None:
+        if session_id not in self._persistent_sessions:
+            self._close_terminal(session_id)
+            return
+        choice = self._terminal_close_choice("断开终端", 1)
+        if choice == "detach":
+            self._close_terminal(session_id)
+        elif choice == "end":
+            self._end_terminal_sessions([session_id])
+
+    def _end_terminal_sessions(self, sessions: list[str]) -> None:
+        # Resolve all routes before closing anything; failed kills retain their local views.
+        if self._job is not None or self._tmux_job is not None:
+            QMessageBox.information(self, "结束终端", "请等待当前连接或会话查询完成后重试。")
+            return
+        targets = []
+        ordinary = []
+        try:
+            for sid in sessions:
+                key = self._persistent_sessions.get(sid)
+                if key is None:
+                    ordinary.append(sid)
+                    continue
+                record = self._tmux_records[key]
+                targets.append((sid, record, self._tmux_root(record), tuple(record["route"]), record["name"]))
+        except (KeyError, ValueError) as exc:
+            QMessageBox.warning(self, "结束终端", str(exc))
+            return
+        if not targets:
+            for sid in ordinary:
+                self._close_terminal(sid)
+            return
+        def work():
+            ended, errors = [], []
+            for sid, record, root, route, name in targets:
+                try:
+                    backend = TmuxBackend(root)
+                    backend.route = route
+                    backend.kill(name)
+                    ended.append(sid)
+                except Exception as exc:
+                    errors.append(f"{record['node']} / {name}: {type(exc).__name__}: {exc}")
+            return ended, errors
+        def success(result):
+            ended, errors = result
+            for sid in ordinary:
+                self._close_terminal(sid)
+            for sid, record, *_rest in targets:
+                if sid in ended:
+                    # PTY EOF may already have cleared record['local_session'].
+                    # The requested session ID still identifies its retained tab.
+                    self._close_terminal(sid)
+                    self._forget_tmux_record(record["key"])
+            self._refresh_tmux_tasks(save=True)
+            self.status.setText(f"已永久结束 {len(ended)} 个 tmux 会话，关闭 {len(ordinary)} 个普通终端。")
+            if errors:
+                QMessageBox.warning(self, "部分终端未能结束", "失败的终端连接保留，可重试。\n" + "\n".join(errors))
+        self._run(work, success, "正在永久结束远程会话…", background_slot="_tmux_job",
+                  log_action=f"永久结束终端（{len(targets)} 个 tmux 会话）", log_category="terminal",
+                  log_result=lambda result: ("部分完成" if result[1] and result[0] else "失败" if result[1] else "成功",
+                      f"{len(result[0])}/{len(targets)} 个会话已结束" + ("；" + "；".join(result[1]) if result[1] else "")))
 
     def _close_terminal_group(self, group_id: str) -> None:
         sessions = self.terminal_workspace.group_sessions(group_id)
         if not sessions:
             return
         name = self.terminal_workspace.group_name(group_id)
+        if any(sid in self._persistent_sessions for sid in sessions):
+            choice = self._terminal_close_choice(f"断开终端组：{name}", len(sessions))
+            if choice == "detach":
+                for sid in sessions:
+                    self._close_terminal(sid)
+            elif choice == "end":
+                self._end_terminal_sessions(sessions)
+            return
         choice = QMessageBox.question(
             self, "断开终端组",
             f"断开 {name} 的 {len(sessions)} 个终端连接？",
@@ -1158,10 +1619,27 @@ class MainWindow(QMainWindow):
         self._record_activity("terminal", "SSH 终端输入", "发送失败", error)
 
     def _close_terminals(self, node_ids: list[str]) -> None:
+        sessions = [sid for sid, record in self.terminal_workspace._sessions.items()
+                    if record.node_id in node_ids]
+        if any(sid in self._persistent_sessions for sid in sessions):
+            choice = self._terminal_close_choice("断开勾选节点终端", len(sessions))
+            if choice == "detach":
+                for sid in sessions:
+                    self._close_terminal(sid)
+            elif choice == "end":
+                self._end_terminal_sessions(sessions)
+            return
         closed = self._terminal_manager.close_nodes(node_ids)
         self.status.setText(f"已关闭 {closed} 个终端连接。")
 
     def _terminal_closed(self, session_id: str, unexpected: bool) -> None:
+        task_key = self._persistent_sessions.pop(session_id, None)
+        record = self._tmux_records.get(task_key)
+        if record is not None:
+            record.update(local_session="", state="待检查（已断开）" if unexpected else "已分离（待检查）",
+                          attached=max(0, record.get("attached", 0) - 1),
+                          detail="本机连接已关闭；需扫描服务器确认会话仍存在。")
+            self._refresh_tmux_tasks(save=True)
         label = self.terminal_workspace.session_node_label(session_id)
         self._record_activity("connection", f"SSH 终端断开（{label}）",
                               "意外断开" if unexpected else "成功")
@@ -1177,7 +1655,8 @@ class MainWindow(QMainWindow):
         self._probe_prompt_pending.pop(session_id, None)
         if unexpected:
             self.terminal_workspace.mark_terminal_closed(session_id)
-            self.status.setText("SSH Shell 已关闭；终端输出仍可查看。")
+            self.status.setText("持久终端连接已断开；请在任务页检查和恢复远程会话。" if record is not None
+                                else "SSH Shell 已关闭；终端输出仍可查看。")
         else:
             self.terminal_workspace.remove_terminal(session_id)
 
@@ -1330,9 +1809,20 @@ class MainWindow(QMainWindow):
         self._help_dialog.raise_()
         self._help_dialog.activateWindow()
 
+    def _file_busy(self, *scopes: str) -> bool:
+        requested = set(scopes)
+        return (bool(self._job is not None and requested != {"local"})
+                or bool("workers" in requested and self._worker_connect_job is not None)
+                or any(requested.intersection(active) for active in self._file_tasks.values()))
+
+    def _remote_files_active(self) -> bool:
+        return (any(active - {"local"} for active in self._file_tasks.values())
+                or self._remote_browse_job is not None or self._worker_browse_job is not None
+                or self._worker_connect_job is not None)
+
     def _update_controls(self) -> None:
         busy = self._job is not None
-        copying = self._copy_job is not None
+        copying = self._remote_files_active()
         connecting_workers = self._worker_connect_job is not None
         connected = self._session is not None
         self.connect_button.setEnabled(not busy and not copying and not connected)
@@ -1343,15 +1833,24 @@ class MainWindow(QMainWindow):
         for widget in (self.host, self.port, self.user, self.key_file, self.password):
             widget.setEnabled(not busy and not connected)
         for widget in (self.up_button, self.refresh_button, self.path_edit, self.tree, self.table):
-            widget.setEnabled(not busy and connected)
-        self.local_tree.setEnabled(not busy)
-        self.local_table.setEnabled(not busy)
-        self.worker_browser.set_busy(busy, connected and not self._parents)
-        if copying:
+            widget.setEnabled(not busy and self._remote_browse_job is None and connected)
+        self.local_tree.setEnabled(True)
+        self.local_table.setEnabled(True)
+        self.worker_browser.set_busy(
+            busy or self._worker_browse_job is not None or connecting_workers,
+            connected and not self._parents,
+        )
+        if self._file_busy("workers"):
             self.worker_browser.connect_button.setEnabled(False)
             self.worker_browser.disconnect_button.setEnabled(False)
             self.worker_browser.add_button.setEnabled(False)
+            self.worker_browser.create_directory_button.setEnabled(False)
         self.terminal_workspace.set_busy(busy)
+        self.terminal_workspace.persistent_mode.setEnabled(not busy)
+        self.tasks_workspace.set_busy(busy or self._tmux_job is not None, connected)
+        self.tasks_workspace.set_scanning(self._tmux_scan_job is not None)
+        if self._tmux_job is not None:
+            self.disconnect_button.setEnabled(False)
         if connecting_workers:
             for widget in (self.jump_button, self.disconnect_button, self.site_button,
                            self.worker_browser.connect_button, self.worker_browser.disconnect_button,
@@ -1432,7 +1931,7 @@ class MainWindow(QMainWindow):
 
     def _start_alias_connection(self, alias: str) -> None:
         jump = self._session
-        if (jump is None or self._job is not None or self._copy_job is not None
+        if (jump is None or self._job is not None or self._remote_files_active()
                 or self._current_listing is None):
             return
 
@@ -1587,8 +2086,7 @@ class MainWindow(QMainWindow):
         self._finish_background_close()
 
     def _add_worker_alias(self) -> None:
-        if (self._session is None or self._parents or self._job is not None
-                or self._copy_job is not None):
+        if (self._session is None or self._parents or self._file_busy("workers")):
             return
         alias, accepted = QInputDialog.getText(self, "添加间接节点", "直连节点上的 SSH 别名：")
         alias = alias.strip()
@@ -1611,7 +2109,7 @@ class MainWindow(QMainWindow):
 
     def _connect_selected_workers(self) -> None:
         jump = self._session
-        if jump is None or self._parents or self._job is not None or self._copy_job is not None or self._worker_connect_job is not None:
+        if jump is None or self._parents or self._file_busy("workers") or self._worker_browse_job is not None or self._worker_connect_job is not None:
             return
         aliases = [alias for alias in self.worker_browser.target_aliases() if alias not in self._workers]
         self.worker_browser._check_all(False)
@@ -1713,7 +2211,7 @@ class MainWindow(QMainWindow):
         )
 
     def _disconnect_selected_workers(self) -> None:
-        if self._job is not None or self._copy_job is not None or self._worker_connect_job is not None:
+        if self._file_busy("workers") or self._worker_browse_job is not None or self._worker_connect_job is not None:
             return
         aliases = [alias for alias in self.worker_browser.target_aliases() if alias in self._workers]
         self.worker_browser._check_all(False)
@@ -1742,6 +2240,7 @@ class MainWindow(QMainWindow):
 
         self._run(
             work, success, f"正在断开 {len(aliases)} 个间接节点…",
+            background_slot="_worker_connect_job",
             log_action=f"SFTP 并行断开（{compact_node_aliases(aliases)}）",
             log_category="connection", log_context={"nodes": aliases},
             log_result=lambda errors: (
@@ -1756,7 +2255,8 @@ class MainWindow(QMainWindow):
     def _browse_workers(self, path: str, parent_fallback: bool = False) -> None:
         if path.startswith("/"):
             self._cancel_auto_hash()
-        if self._job is not None:
+        if (self._job is not None or self._worker_browse_job is not None
+                or self._worker_connect_job is not None):
             if path.startswith("/"):
                 self._pending_worker_refresh = (path, parent_fallback)
             return
@@ -1810,9 +2310,16 @@ class MainWindow(QMainWindow):
             self.status.setText(f"间接节点目录：已读取 {len(results)} 个，失败 {len(errors)} 个。")
             if errors:
                 lines = [f"{alias}: {message}" for alias, message in list(errors.items())[:8]]
-                QMessageBox.warning(self, "读取间接节点目录", "以下节点读取失败：\n" + "\n".join(lines))
+                self._show_background_error("以下节点读取失败：\n" + "\n".join(lines))
 
-        self._run(work, success, f"正在读取 {len(names)} 个间接节点的 {path}…")
+        self._run(work, success, f"正在读取 {len(names)} 个间接节点的 {path}…",
+                  self._finish_worker_browse, background_slot="_worker_browse_job")
+
+    def _finish_worker_browse(self) -> None:
+        if self._pending_worker_refresh is not None:
+            path, fallback = self._pending_worker_refresh
+            self._pending_worker_refresh = None
+            self._browse_workers(path, fallback)
 
     def _cancel_auto_hash(self) -> None:
         self._hash_generation += 1
@@ -2028,8 +2535,9 @@ class MainWindow(QMainWindow):
     def _collect_worker_files(
         self, token: str, paths: list[str], destination: str, *, to_jump: bool,
     ) -> None:
+        scopes = frozenset({"workers", "remote" if to_jump else "local"})
         jump = self._session
-        if (jump is None or self._parents or self._job is not None or self._copy_job is not None
+        if (jump is None or self._parents or self._file_busy(*scopes)
                 or token != self.worker_browser.drag_token):
             return
         if not paths or any(not path.startswith("/") for path in paths):
@@ -2049,7 +2557,8 @@ class MainWindow(QMainWindow):
             return
         sessions = {alias: self._workers[alias] for alias in aliases}
         browsed_jump_path = self._path
-        self._apply_conflict_choice = None
+        jump_version = self._listing_version
+        resolve_conflict = self._new_conflict_resolver()
         self._batch_mode_label = "汇集到跳板" if to_jump else "汇集到本地"
         self.batch_results.setRowCount(0)
 
@@ -2069,14 +2578,14 @@ class MainWindow(QMainWindow):
                     with transfer_pool.worker(alias) as source:
                         if not to_jump:
                             result = copy_remote_to_local(
-                                source, paths, destination, progress, self._resolve_conflict,
+                                source, paths, destination, progress, resolve_conflict,
                                 root_suffix=alias,
                             )
                         else:
                             with transfer_pool.jump() as target:
                                 result = copy_remote_between_sessions(
                                     source, target, paths, destination, progress,
-                                    self._resolve_conflict, root_suffix=alias,
+                                    resolve_conflict, root_suffix=alias,
                                 )
                     return BatchResult(alias, copied=result)
 
@@ -2093,7 +2602,8 @@ class MainWindow(QMainWindow):
 
         def success(value):
             results, listing = value
-            if to_jump and listing is not None and self._path == browsed_jump_path:
+            if to_jump and listing is not None and (self._session is jump and self._path == browsed_jump_path
+                    and self._listing_version == jump_version and self._remote_browse_job is None):
                 self._show_listing(listing)
             elif not to_jump:
                 self.local.refresh()
@@ -2106,11 +2616,11 @@ class MainWindow(QMainWindow):
             log_result=self._batch_log_result,
             log_context={"sources": paths, "destination": destination, "nodes": aliases},
             log_context_result=self._batch_log_context,
-            background_copy=True,
+            background_copy=True, file_scopes=scopes,
         )
 
     def _delete_worker_selection(self) -> None:
-        if self._copy_job is not None:
+        if self._file_busy("workers"):
             return
         names = self.worker_browser.selected_names()
         if not names:
@@ -2122,8 +2632,7 @@ class MainWindow(QMainWindow):
             ))
 
     def _create_worker_directory(self) -> None:
-        if (self._session is None or self._parents or self._job is not None
-                or self._copy_job is not None):
+        if (self._session is None or self._parents or self._file_busy("workers")):
             return
         parent = self.worker_browser.rendered_path
         if not parent.startswith("/"):
@@ -2144,15 +2653,18 @@ class MainWindow(QMainWindow):
         target = posixpath.join(parent, name)
         self.batch_results.setRowCount(0)
 
-        def work() -> WorkerDirectoryOutcome:
+        jump = self._session
+
+        def work_on_pool(transfer_pool) -> WorkerDirectoryOutcome:
             conflicts: list[str] = []
             errors: dict[str, str] = {}
 
             def inspect(alias: str, session: RemoteSession) -> bool:
-                parent_info = session.sftp.stat(parent)
-                if not stat.S_ISDIR(parent_info.st_mode or 0):
-                    raise NotADirectoryError(f"目标不是目录：{parent}")
-                return remote_directory_conflict(session, parent, name)
+                with transfer_pool.worker(alias) as peer:
+                    parent_info = peer.sftp.stat(parent)
+                    if not stat.S_ISDIR(parent_info.st_mode or 0):
+                        raise NotADirectoryError(f"目标不是目录：{parent}")
+                    return remote_directory_conflict(peer, parent, name)
 
             with ThreadPoolExecutor(max_workers=min(4, len(nodes))) as pool:
                 futures = {pool.submit(inspect, alias, session): alias
@@ -2177,17 +2689,18 @@ class MainWindow(QMainWindow):
                 if policy == "cancel":
                     return WorkerDirectoryOutcome([], {}, cancelled=True)
 
-            def create_one(alias: str, session: RemoteSession):
+            def create_one(alias: str, _session: RemoteSession):
                 try:
-                    path, created = create_remote_directory_with_policy(session, parent, name, policy)
-                    result = WorkerDirectoryResult(alias, path, created)
+                    with transfer_pool.worker(alias) as peer:
+                        path, created = create_remote_directory_with_policy(peer, parent, name, policy)
+                        result = WorkerDirectoryResult(alias, path, created)
+                        try:
+                            listing = peer.list_directory(parent)
+                        except Exception:
+                            listing = None
+                        return result, listing
                 except Exception as exc:
                     return WorkerDirectoryResult(alias, error=f"{type(exc).__name__}: {exc}"), None
-                try:
-                    listing = session.list_directory(parent)
-                except Exception:
-                    listing = None
-                return result, listing
 
             completed: dict[str, WorkerDirectoryResult] = {}
             listings: dict[str, DirectoryListing] = {}
@@ -2202,11 +2715,16 @@ class MainWindow(QMainWindow):
                         listings[alias] = listing
             return WorkerDirectoryOutcome([completed[alias] for alias in aliases], listings)
 
+        def work():
+            with TransferSessionPool(jump.config, self._jump_password) as transfer_pool:
+                return work_on_pool(transfer_pool)
+
         def success(outcome: WorkerDirectoryOutcome) -> None:
             if outcome.cancelled:
                 self.status.setText("新建目录已取消；没有创建任何目录。")
                 return
-            if outcome.listings:
+            if (outcome.listings and self.worker_browser.rendered_path == parent
+                    and self._worker_browse_job is None):
                 self.worker_browser.set_listings(outcome.listings)
                 self._schedule_auto_hash()
             for result in outcome.results:
@@ -2249,11 +2767,12 @@ class MainWindow(QMainWindow):
                  "created": result.created, "error": result.error}
                 for result in outcome.results
             ]},
+            file_scopes=frozenset(("workers",)),
         )
 
     def _batch_operation(self, action: BatchAction | None = None) -> None:
         jump = self._session
-        if jump is None or self._parents or self._job is not None or self._copy_job is not None:
+        if jump is None or self._parents or self._job is not None:
             return
         if action is None:
             aliases = self.worker_browser.checked_aliases()
@@ -2284,6 +2803,18 @@ class MainWindow(QMainWindow):
             target_alias = action.target_alias
             max_workers = action.max_workers
             sources = action.sources
+        scopes = frozenset({
+            "local_to_workers": ("local", "workers"),
+            "jump_to_workers": ("remote", "workers"),
+            "worker_to_jump": ("workers", "remote"),
+            "worker_to_local": ("workers", "local"),
+            "worker_to_worker": ("workers",),
+            "delete_workers": ("workers",),
+            "local_to_jump": ("local", "remote"),
+            "jump_to_local": ("remote", "local"),
+        }[mode])
+        if self._file_busy(*scopes):
+            return
         uses_workers = mode.endswith("to_workers") or mode.startswith("worker_") or mode == "delete_workers"
         if uses_workers and (not aliases or any(alias not in self._workers for alias in aliases)):
             QMessageBox.warning(self, "批量操作", "请先勾选并连接全部要操作的间接节点。")
@@ -2336,7 +2867,7 @@ class MainWindow(QMainWindow):
                  else {"直连节点": jump})
         if uses_workers:
             self._cancel_auto_hash()
-        self._apply_conflict_choice = None
+        resolve_conflict = self._new_conflict_resolver()
         self.batch_results.setRowCount(0)
         self._batch_mode_label = next(label for label, key in BatchDialog.MODES if key == mode)
         self._missing_destination_choice = None
@@ -2367,26 +2898,26 @@ class MainWindow(QMainWindow):
                 if not prepare_destination(alias, session):
                     return BatchResult(alias, copied=CopyResult(0, 0, 0, skipped=len(sources)))
             if mode == "local_to_workers":
-                result = copy_local_to_remote(session, sources, destination, progress, self._resolve_conflict)
+                result = copy_local_to_remote(session, sources, destination, progress, resolve_conflict)
             elif mode == "local_to_jump":
-                result = copy_local_to_remote(session, sources, destination, progress, self._resolve_conflict)
+                result = copy_local_to_remote(session, sources, destination, progress, resolve_conflict)
             elif mode == "jump_to_local":
-                result = copy_remote_to_local(session, sources, destination, progress, self._resolve_conflict)
+                result = copy_remote_to_local(session, sources, destination, progress, resolve_conflict)
             elif mode == "worker_to_local":
-                result = copy_remote_to_local(session, worker_sources, destination, progress, self._resolve_conflict)
+                result = copy_remote_to_local(session, worker_sources, destination, progress, resolve_conflict)
             elif mode == "worker_to_worker":
                 if transfer_pool is not None:
                     with transfer_pool.worker(target_alias) as target_session:
                         result = copy_remote_between_sessions(
                             session, target_session, worker_sources, destination,
-                            progress, self._resolve_conflict,
+                            progress, resolve_conflict,
                         )
                 else:
                     target_session = self._workers[target_alias].open_sftp_peer()
                     try:
                         result = copy_remote_between_sessions(
                             session, target_session, worker_sources, destination,
-                            progress, self._resolve_conflict,
+                            progress, resolve_conflict,
                         )
                     finally:
                         target_session.close()
@@ -2397,12 +2928,12 @@ class MainWindow(QMainWindow):
                         if mode == "jump_to_workers":
                             result = copy_remote_between_sessions(
                                 extra_jump, session, sources, destination,
-                                progress, self._resolve_conflict,
+                                progress, resolve_conflict,
                             )
                         else:
                             result = copy_remote_between_sessions(
                                 session, extra_jump, worker_sources, destination,
-                                progress, self._resolve_conflict,
+                                progress, resolve_conflict,
                             )
                 else:
                     extra_jump = RemoteSession.connect(jump.config, self._jump_password)
@@ -2410,12 +2941,12 @@ class MainWindow(QMainWindow):
                         if mode == "jump_to_workers":
                             result = copy_remote_between_sessions(
                                 extra_jump, session, sources, destination,
-                                progress, self._resolve_conflict,
+                                progress, resolve_conflict,
                             )
                         else:
                             result = copy_remote_between_sessions(
                                 session, extra_jump, worker_sources, destination,
-                                progress, self._resolve_conflict,
+                                progress, resolve_conflict,
                             )
                     finally:
                         extra_jump.close()
@@ -2431,8 +2962,9 @@ class MainWindow(QMainWindow):
             return BatchResult(alias, copied=result, deleted=deleted)
 
         browsed_jump_path = self._path
+        jump_version = self._listing_version
         def work():
-            if moving or mode == "delete_workers":
+            if moving:
                 results = run_parallel(nodes, work_one, self.batchResultReady.emit, max_workers)
                 return build_batch_result(results, nodes)
             with TransferSessionPool(jump.config, self._jump_password) as transfer_pool:
@@ -2485,12 +3017,14 @@ class MainWindow(QMainWindow):
 
         def success(value):
             results, jump_listing, worker_listings = value
-            if jump_listing is not None and self._path == browsed_jump_path:
+            if jump_listing is not None and (self._session is jump and self._path == browsed_jump_path
+                    and self._listing_version == jump_version and self._remote_browse_job is None):
                 self._show_listing(jump_listing)
-            if self.worker_browser.rendered_path == worker_path:
+            if self.worker_browser.rendered_path == worker_path and self._worker_browse_job is None:
                 for alias, listing in worker_listings.items():
                     self.worker_browser.set_listing(alias, listing)
-            if worker_listings and self.worker_browser.rendered_path == worker_path:
+            if (worker_listings and self.worker_browser.rendered_path == worker_path
+                    and self._worker_browse_job is None):
                 self._schedule_auto_hash()
             self.local.refresh()
             complete = sum(result.complete for result in results)
@@ -2507,6 +3041,7 @@ class MainWindow(QMainWindow):
             log_context={"sources": sources, "destination": destination, "nodes": list(nodes)},
             log_context_result=self._batch_log_context,
             background_copy=not moving and mode != "delete_workers",
+            file_scopes=scopes if not moving else None,
         )
 
     @Slot(object)
@@ -2668,16 +3203,19 @@ class MainWindow(QMainWindow):
         log_context_result: Callable[[object], dict] | None = None,
         background_copy: bool = False,
         background_slot: str | None = None,
+        file_scopes: frozenset[str] | None = None,
     ) -> None:
         if log_action and log_category == "file":
             self._hash_cache.clear()
-        if background_copy or background_slot:
+        if file_scopes is not None or background_copy or background_slot:
+            attribute = ("_file_task_" + "_".join(sorted(file_scopes))
+                         if file_scopes is not None else background_slot or "_copy_job")
             self._run_background_task(
                 work, on_success, description, log_action=log_action,
                 log_result=log_result, log_category=log_category,
                 log_context=log_context, log_context_result=log_context_result,
                 on_finished=on_finished,
-                job_attribute=background_slot or "_copy_job",
+                job_attribute=attribute, file_scopes=file_scopes, is_copy=background_copy,
             )
             return
         if self._job is not None:
@@ -2714,10 +3252,19 @@ class MainWindow(QMainWindow):
         log_context_result: Callable[[object], dict] | None,
         on_finished: Callable[[], None] | None,
         job_attribute: str = "_copy_job",
+        file_scopes: frozenset[str] | None = None,
+        is_copy: bool = False,
     ) -> None:
-        if self._job is not None or getattr(self, job_attribute) is not None:
+        scanning = job_attribute == "_tmux_scan_job"
+        if file_scopes is not None:
+            if self._file_busy(*file_scopes):
+                return
+        elif self._job is not None and not scanning:
             return
-        self.status.setText(description)
+        if getattr(self, job_attribute, None) is not None:
+            return
+        if not scanning:
+            self.status.setText(description)
         event_id = uuid.uuid4().hex
         started = time.monotonic()
         index = self._append_operation_log(log_action, "进行中") if log_action else None
@@ -2726,6 +3273,11 @@ class MainWindow(QMainWindow):
                                  action=log_action, state="进行中", context=log_context)
         job = JobThread(work, self)
         setattr(self, job_attribute, job)
+        if file_scopes is not None:
+            self._file_tasks[job] = file_scopes
+            if is_copy:
+                self._file_copy_tasks.add(job)
+                self._copy_job = next(iter(self._file_copy_tasks))
 
         def finish_log(state: str, detail: str = "", extra: dict | None = None) -> None:
             if log_action is None:
@@ -2763,13 +3315,26 @@ class MainWindow(QMainWindow):
                 "后台任务失败：%s", self._redact_log_value(message),
             )
             finish_log("失败", message)
-            self._show_error(message)
+            if scanning:
+                if not self._tmux_cancel.is_set():
+                    self.tasks_workspace.summary.setText("持久终端扫描失败，可稍后重试；其他操作不受影响。")
+                    self.tasks_workspace.summary.setToolTip(self._redact_log_value(message))
+            elif file_scopes is not None or job_attribute in {"_remote_browse_job", "_worker_browse_job"}:
+                self._show_background_error(message)
+            else:
+                self._show_error(message)
 
         def finished() -> None:
             if getattr(self, job_attribute) is job:
                 setattr(self, job_attribute, None)
+            self._file_tasks.pop(job, None)
+            self._file_copy_tasks.discard(job)
+            if file_scopes is not None:
+                self._copy_job = next(iter(self._file_copy_tasks), None)
             self._update_controls()
             self._finish_background_close()
+            if job_attribute == "_worker_connect_job":
+                self._finish_worker_browse()
 
         job.succeeded.connect(succeeded)
         job.failed.connect(failed)
@@ -2833,6 +3398,14 @@ class MainWindow(QMainWindow):
         self.status.setText("操作失败")
         QMessageBox.warning(self, "NodeBridge", message)
 
+    def _show_background_error(self, message: str) -> None:
+        self.status.setText("文件任务失败；详情见操作日志。")
+        box = QMessageBox(QMessageBox.Icon.Warning, "NodeBridge", message,
+                          QMessageBox.StandardButton.Ok, self)
+        box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        box.setWindowModality(Qt.WindowModality.NonModal)
+        box.show()
+
     def _notify_done(self, message: str) -> None:
         self.status.setText(message)
         self.completion_toast.setText(message)
@@ -2860,6 +3433,19 @@ class MainWindow(QMainWindow):
             self.conflictRequested.emit(prompt)
             prompt.done.wait()
             return prompt.action
+
+    def _new_conflict_resolver(self):
+        choices = {}
+        lock = threading.Lock()
+
+        def resolve(info):
+            with lock:
+                prompt = ConflictPrompt(info, choices=choices)
+                self.conflictRequested.emit(prompt)
+                prompt.done.wait()
+                return prompt.action
+
+        return resolve
 
     @Slot(object)
     def _show_missing_destination(self, prompt: MissingDestinationPrompt) -> None:
@@ -2889,13 +3475,18 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _show_conflict_prompt(self, prompt: ConflictPrompt) -> None:
         try:
-            if self._apply_conflict_choice is not None:
-                prompt.action = self._apply_conflict_choice
+            saved = (prompt.choices.get("action") if prompt.choices is not None
+                     else self._apply_conflict_choice)
+            if saved is not None:
+                prompt.action = saved
                 return
             choice, apply_all = ConflictDialog(prompt.info, self).result_choice()
             prompt.action = choice
             if apply_all and choice is not ConflictAction.CANCEL:
-                self._apply_conflict_choice = choice
+                if prompt.choices is not None:
+                    prompt.choices["action"] = choice
+                else:
+                    self._apply_conflict_choice = choice
         finally:
             prompt.done.set()
 
@@ -2950,7 +3541,7 @@ class MainWindow(QMainWindow):
         password: str | None,
         jump: RemoteSession | None = None,
     ) -> None:
-        if self._job is not None:
+        if self._job is not None or self._remote_files_active():
             return
         if jump is not None and self._current_listing is None:
             QMessageBox.warning(self, "NodeBridge", "当前站点目录尚未加载完成。")
@@ -2997,15 +3588,21 @@ class MainWindow(QMainWindow):
         )
 
     def _disconnect(self) -> None:
+        if self._tmux_job is not None:
+            self.status.setText("请等待远程会话结束操作完成后再断开站点。")
+            return
         if self._worker_connect_job is not None:
             self.status.setText("请等待间接节点连接结束后再断开直连节点。")
             return
-        if self._copy_job is not None:
-            self.status.setText("请等待后台复制完成后再断开连接。")
+        if (self._remote_files_active() or self._remote_browse_job is not None
+                or self._worker_browse_job is not None):
+            self.status.setText("请等待远程文件任务完成后再断开连接。")
             return
         session = self._session
         if session is None:
             return
+        self._tmux_cancel.set()
+        self._tmux_restore_queue.clear()
         self._cancel_auto_hash()
         self._probe_generation += 1
         self._probe_cancel.set()
@@ -3017,6 +3614,8 @@ class MainWindow(QMainWindow):
         helpers = list(self._jump_helpers)
         terminal_nodes = [f"primary:{id(session)}"]
         if not self._parents:
+            terminal_nodes.extend(record.node_id for sid, record in self.terminal_workspace._sessions.items()
+                                  if sid in self._persistent_sessions)
             terminal_nodes.extend(
                 f"worker:{alias}" for alias in set(self._workers) | set(self.worker_browser.known_aliases())
             )
@@ -3175,7 +3774,8 @@ class MainWindow(QMainWindow):
                 self._fill_tree(tree_only, result)
                 self.status.setText(f"已展开 {result.path}")
 
-        self._run(lambda: session.list_directory(path), success, f"正在读取 {path}…")
+        self._run(lambda: session.list_directory(path), success, f"正在读取 {path}…",
+                  background_slot="_remote_browse_job")
 
     def _expand_tree(self, item: QTreeWidgetItem) -> None:
         if not item.data(0, LOADED_ROLE):
@@ -3345,7 +3945,7 @@ class MainWindow(QMainWindow):
     def _delete_remote_selection(self) -> None:
         paths = self._remote_selected_paths()
         session = self._session
-        if not paths or session is None or self._job is not None or self._copy_job is not None:
+        if not paths or session is None or self._file_busy("remote"):
             return
         choice = QMessageBox.question(
             self, "确认删除", f"永久删除选中的 {len(paths)} 个远程项目及其内容？此操作不能撤销。",
@@ -3354,25 +3954,30 @@ class MainWindow(QMainWindow):
         )
         if choice != QMessageBox.StandardButton.Yes:
             return
+        browsed_path = self._path
+        version = self._listing_version
 
         def work():
-            count = delete_remote(session, paths)
-            return count, session.list_directory(self._path)
+            with closing(session.open_sftp_peer()) as peer:
+                count = delete_remote(peer, paths)
+                return count, peer.list_directory(browsed_path)
 
         def success(result):
-            self.tree.clear()
-            self._show_listing(result[1])
+            if (self._session is session and self._path == browsed_path
+                    and self._listing_version == version and self._remote_browse_job is None):
+                self._show_listing(result[1])
             self._notify_done(f"已删除 {result[0]} 个远程项目。")
 
         self._run(
             work, success, "正在删除远程项目…",
             log_action=f"SFTP 删除（{self._session_label(session)}）：{self._log_paths(paths)}",
             log_context={"sources": paths, "node": self._session_label(session)},
+            file_scopes=frozenset(("remote",)),
         )
 
     def _delete_local_selection(self) -> None:
         paths = self._local_selected_paths()
-        if not paths or self._job is not None or self._copy_job is not None:
+        if not paths or self._file_busy("local"):
             return
         choice = QMessageBox.question(
             self, "确认删除", f"将选中的 {len(paths)} 个本地项目移入回收站？",
@@ -3390,12 +3995,12 @@ class MainWindow(QMainWindow):
             lambda: trash_local(paths), success, "正在移入回收站…",
             log_action=f"移入本地回收站：{self._log_paths(paths)}",
             log_context={"sources": paths},
+            file_scopes=frozenset(("local",)),
         )
 
     def _rename_remote_selection(self) -> None:
         selected = self.table.selectionModel().selectedRows(0)
-        if (len(selected) != 1 or self._session is None or self._job is not None
-                or self._copy_job is not None):
+        if (len(selected) != 1 or self._session is None or self._file_busy("remote")):
             return
         self._rename_timer.stop()
         self._pending_rename = None
@@ -3404,28 +4009,34 @@ class MainWindow(QMainWindow):
     def _commit_remote_rename(self, index: QModelIndex, name: str) -> None:
         session = self._session
         source = self._rename_source(self.table, index)
-        if (session is None or self._job is not None or self._copy_job is not None
+        if (session is None or self._file_busy("remote")
                 or not source or name == posixpath.basename(source)):
             return
 
+        browsed_path = self._path
+        version = self._listing_version
+
         def work():
-            target = rename_remote(session, source, name)
-            return target, session.list_directory(self._path)
+            with closing(session.open_sftp_peer()) as peer:
+                target = rename_remote(peer, source, name)
+                return target, peer.list_directory(browsed_path)
 
         def success(result):
-            self.tree.clear()
-            self._show_listing(result[1])
+            if (self._session is session and self._path == browsed_path
+                    and self._listing_version == version and self._remote_browse_job is None):
+                self._show_listing(result[1])
             self._notify_done(f"已重命名为 {posixpath.basename(result[0])}。")
 
         self._run(
             work, success, "正在重命名远程项目…",
             log_action=f"SFTP 重命名（{self._session_label(session)}）：{source} → {name}",
             log_context={"sources": [source], "destination": posixpath.join(posixpath.dirname(source), name), "node": self._session_label(session)},
+            file_scopes=frozenset(("remote",)),
         )
 
     def _rename_local_selection(self) -> None:
         selected = self.local_table.selectionModel().selectedRows(0)
-        if len(selected) != 1 or self._job is not None or self._copy_job is not None:
+        if len(selected) != 1 or self._file_busy("local"):
             return
         self._rename_timer.stop()
         self._pending_rename = None
@@ -3433,7 +4044,7 @@ class MainWindow(QMainWindow):
 
     def _commit_local_rename(self, index: QModelIndex, name: str) -> None:
         source = self._rename_source(self.local_table, index)
-        if self._job is not None or self._copy_job is not None or not source or name == Path(source).name:
+        if self._file_busy("local") or not source or name == Path(source).name:
             return
 
         def success(target):
@@ -3444,34 +4055,39 @@ class MainWindow(QMainWindow):
             lambda: rename_local(source, name), success, "正在重命名本地项目…",
             log_action=f"本地重命名：{source} → {name}",
             log_context={"sources": [source], "destination": str(Path(source).with_name(name))},
+            file_scopes=frozenset(("local",)),
         )
 
     def _create_remote_directory(self, enter: bool) -> None:
         session = self._session
-        if session is None or self._job is not None or self._copy_job is not None:
+        if session is None or self._file_busy("remote"):
             return
         name, accepted = QInputDialog.getText(self, "创建目录", "目录名称：")
         if not accepted:
             return
         parent = self._path
+        version = self._listing_version
 
         def work():
-            target = create_remote_directory(session, parent, name)
-            return target, session.list_directory(target if enter else parent)
+            with closing(session.open_sftp_peer()) as peer:
+                target = create_remote_directory(peer, parent, name)
+                return target, peer.list_directory(target if enter else parent)
 
         def success(result):
-            self.tree.clear()
-            self._show_listing(result[1])
+            if (self._session is session and self._path == parent
+                    and self._listing_version == version and self._remote_browse_job is None):
+                self._show_listing(result[1])
             self._notify_done(f"已创建目录 {result[0]}。")
 
         self._run(
             work, success, "正在创建远程目录…",
             log_action=f"SFTP 创建目录（{self._session_label(session)}）：{posixpath.join(parent, name)}",
             log_context={"destination": posixpath.join(parent, name), "node": self._session_label(session)},
+            file_scopes=frozenset(("remote",)),
         )
 
     def _create_local_directory(self, enter: bool) -> None:
-        if self._job is not None or self._copy_job is not None:
+        if self._file_busy("local"):
             return
         name, accepted = QInputDialog.getText(self, "创建目录", "目录名称：")
         if not accepted:
@@ -3479,7 +4095,7 @@ class MainWindow(QMainWindow):
         parent = self.local.current_path
 
         def success(target):
-            if enter:
+            if enter and self.local.current_path == parent:
                 self.local.navigate(str(target))
             else:
                 self.local.refresh()
@@ -3489,19 +4105,20 @@ class MainWindow(QMainWindow):
             lambda: create_local_directory(parent, name), success, "正在创建本地目录…",
             log_action=f"本地创建目录：{Path(parent) / name}",
             log_context={"destination": str(Path(parent) / name)},
+            file_scopes=frozenset(("local",)),
         )
 
     def _copy_local_to_local(self, paths: list[str], destination: str) -> None:
-        if self._job is not None or self._copy_job is not None:
+        if self._file_busy("local"):
             return
-        self._apply_conflict_choice = None
+        resolve_conflict = self._new_conflict_resolver()
 
         def work():
             progress = lambda path: self.transferProgress.emit(f"正在复制：{path}")
             return copy_local_to_local(
                 paths, destination,
                 progress,
-                self._resolve_conflict,
+                resolve_conflict,
             )
 
         def success(result):
@@ -3515,21 +4132,23 @@ class MainWindow(QMainWindow):
             log_context={"sources": paths, "destination": destination},
             log_context_result=self._copy_log_context,
             background_copy=True,
+            file_scopes=frozenset(("local",)),
         )
 
     def _copy_remote_to_remote(self, paths: list[str], destination: str) -> None:
         session = self._session
-        if session is None or self._job is not None or self._copy_job is not None:
+        if session is None or self._file_busy("remote"):
             return
-        self._apply_conflict_choice = None
+        resolve_conflict = self._new_conflict_resolver()
         browsed_path = self._path
+        version = self._listing_version
 
         def work():
             progress = lambda path: self.transferProgress.emit(f"正在复制：{path}")
             peer = session.open_sftp_peer()
             try:
                 result = copy_remote_to_remote(
-                    peer, paths, destination, progress, self._resolve_conflict,
+                    peer, paths, destination, progress, resolve_conflict,
                 )
                 return result, peer.list_directory(browsed_path)
             finally:
@@ -3537,7 +4156,8 @@ class MainWindow(QMainWindow):
 
         def success(value):
             result, listing = value
-            if self._session is session and self._path == browsed_path:
+            if (self._session is session and self._path == browsed_path
+                    and self._listing_version == version and self._remote_browse_job is None):
                 self._show_listing(listing)
             self._notify_done(self._copy_status("复制", result))
 
@@ -3548,21 +4168,23 @@ class MainWindow(QMainWindow):
             log_context={"sources": paths, "destination": destination, "node": self._session_label(session)},
             log_context_result=self._copy_log_context,
             background_copy=True,
+            file_scopes=frozenset(("remote",)),
         )
 
     def _copy_local_to_remote(self, paths: list[str], destination: str) -> None:
         session = self._session
-        if session is None or self._job is not None or self._copy_job is not None:
+        if session is None or self._file_busy("local", "remote"):
             return
-        self._apply_conflict_choice = None
+        resolve_conflict = self._new_conflict_resolver()
         browsed_path = self._path
+        version = self._listing_version
 
         def work():
             progress = lambda path: self.transferProgress.emit(f"正在上传：{path}")
             peer = session.open_sftp_peer()
             try:
                 result = copy_local_to_remote(
-                    peer, paths, destination, progress, self._resolve_conflict,
+                    peer, paths, destination, progress, resolve_conflict,
                 )
                 return result, peer.list_directory(browsed_path)
             finally:
@@ -3570,7 +4192,8 @@ class MainWindow(QMainWindow):
 
         def success(value):
             result, listing = value
-            if self._session is session and self._path == browsed_path:
+            if (self._session is session and self._path == browsed_path
+                    and self._listing_version == version and self._remote_browse_job is None):
                 self._show_listing(listing)
             self._notify_done(self._copy_status("上传", result))
 
@@ -3581,6 +4204,7 @@ class MainWindow(QMainWindow):
             log_context={"sources": paths, "destination": destination, "node": self._session_label(session)},
             log_context_result=self._copy_log_context,
             background_copy=True,
+            file_scopes=frozenset(("local", "remote")),
         )
 
     def _copy_remote_to_local(
@@ -3590,21 +4214,21 @@ class MainWindow(QMainWindow):
             self._collect_worker_files(token, paths, destination, to_jump=False)
             return
         session = self._session
-        if (session is None or self._job is not None or self._copy_job is not None
+        if (session is None or self._file_busy("local", "remote")
                 or token != str(id(session))):
             return
-        self._apply_conflict_choice = None
+        resolve_conflict = self._new_conflict_resolver()
 
         def work():
             progress = lambda path: self.transferProgress.emit(f"正在下载：{path}")
             if len(cached_paths) == len(paths) and all(Path(path).exists() for path in cached_paths):
                 labels = {Path(cached).name: remote for cached, remote in zip(cached_paths, paths)}
                 return copy_local_to_local(
-                    cached_paths, destination, progress, self._resolve_conflict, labels
+                    cached_paths, destination, progress, resolve_conflict, labels
                 )
             peer = session.open_sftp_peer()
             try:
-                return copy_remote_to_local(peer, paths, destination, progress, self._resolve_conflict)
+                return copy_remote_to_local(peer, paths, destination, progress, resolve_conflict)
             finally:
                 peer.close()
 
@@ -3619,11 +4243,12 @@ class MainWindow(QMainWindow):
             log_context={"sources": paths, "destination": destination, "node": self._session_label(session)},
             log_context_result=self._copy_log_context,
             background_copy=True,
+            file_scopes=frozenset(("local", "remote")),
         )
 
     def _prepare_drag_export(self, paths: list[str]) -> list[str]:
         session = self._session
-        if session is None or self._job is not None or self._copy_job is not None:
+        if session is None or self._file_busy("remote"):
             return []
         key = (id(session), self._listing_version, tuple(paths))
         cached = self._drag_cache.get(key)
@@ -3657,6 +4282,7 @@ class MainWindow(QMainWindow):
             log_action=f"SFTP 准备拖出缓存（{self._session_label(session)}）：{self._log_paths(paths)}",
             log_context={"sources": paths, "node": self._session_label(session), "note": "Windows 资源管理器最终复制结果不可见"},
             background_copy=True,
+            file_scopes=frozenset(("remote",)),
         )
         loop.exec()
         if not exported:
@@ -3664,13 +4290,27 @@ class MainWindow(QMainWindow):
         return exported
 
     def closeEvent(self, event) -> None:
+        self._tmux_restore_queue.clear()
+        if self._tmux_scan_job is not None:
+            event.ignore()
+            self._tmux_cancel.set()
+            self._tmux_scan_job.finished.connect(self.close)
+            self.status.setText("正在取消后台持久终端扫描…")
+            return
+        if self._tmux_job is not None:
+            event.ignore()
+            self._tmux_cancel.set()
+            self._tmux_job.finished.connect(self.close)
+            self.status.setText("正在等待持久终端操作完成，请稍后关闭。")
+            return
         if self._worker_connect_job is not None:
             event.ignore()
             self.status.setText("请等待间接节点连接结束后再关闭。")
             return
-        if self._copy_job is not None:
+        if (self._file_tasks or self._remote_browse_job is not None
+                or self._worker_browse_job is not None):
             event.ignore()
-            self.status.setText("请等待后台复制完成后再关闭。")
+            self.status.setText("请等待后台文件任务完成后再关闭。")
             return
         if self._job is not None:
             event.ignore()
@@ -3695,12 +4335,15 @@ class MainWindow(QMainWindow):
             temporary.cleanup()
         self._drag_cache.clear()
         self._terminal_manager.close_all()
+        self._layout_settings.save()
         event.accept()
 
     def _finish_background_close(self) -> None:
         if (self._close_when_background_idle and self._job is None
                 and self._worker_connect_job is None
-                and self._copy_job is None and self._hash_job is None and self._probe_job is None
+                and self._tmux_scan_job is None and self._tmux_job is None
+                and not self._file_tasks and self._remote_browse_job is None
+                and self._worker_browse_job is None and self._hash_job is None and self._probe_job is None
                 and self._resource_monitor is None
                 and self._session is None):
             QTimer.singleShot(0, self.close)

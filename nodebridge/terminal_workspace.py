@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QComboBox, QHBoxLayout, QLabel, QPlainTextEdit,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QHBoxLayout, QLabel, QPlainTextEdit,
     QInputDialog, QMenu, QMessageBox, QPushButton, QSizePolicy, QSplitter, QTabBar, QTabWidget,
     QToolButton,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
@@ -38,6 +38,7 @@ class TerminalRecord:
     node_id: str
     title: str
     group_id: str
+    persistent: bool = False
 
 
 @dataclass
@@ -197,6 +198,8 @@ class TerminalWorkspace(QWidget):
     resizeRequested = Signal(str, int, int)
     broadcastRequested = Signal(str, str, dict)
     interruptRequested = Signal(str, dict)
+    recoverPersistentRequested = Signal()
+    groupRenamed = Signal(str, str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -282,6 +285,14 @@ class TerminalWorkspace(QWidget):
         batch_row.addWidget(self.connect_checked_button)
         batch_row.addWidget(self.disconnect_checked_button)
         left_layout.addLayout(batch_row)
+        persistent_row = QHBoxLayout()
+        self.persistent_mode = QCheckBox("持久终端（tmux）")
+        self.persistent_mode.setToolTip("新建终端使用远程 tmux；断开连接后保留任务，需要目标节点安装 tmux 3.1+。")
+        persistent_row.addWidget(self.persistent_mode)
+        self.recover_persistent_button = QPushButton("恢复持久会话…")
+        self.recover_persistent_button.clicked.connect(self.recoverPersistentRequested)
+        persistent_row.addWidget(self.recover_persistent_button)
+        left_layout.addLayout(persistent_row)
         self.new_terminal_button = QPushButton("新建终端")
         self.new_terminal_button.setObjectName("terminalAction")
         self.new_terminal_button.clicked.connect(self._new_terminal)
@@ -393,44 +404,57 @@ class TerminalWorkspace(QWidget):
             if status[0] == "checking" and previous[0] in {"error", "unreachable", "untrusted", "auth"}:
                 continue
             self._node_statuses[node_id] = status
-        # Status-only updates must not rebuild the tree: that resets scrolling,
-        # selection and user-collapsed terminal branches.
-        for index in range(self.node_tree.topLevelItemCount()):
-            node = self.node_tree.topLevelItem(index)
-            node_id = node.data(0, ITEM_ROLE)[1]
-            if node_id not in statuses:
-                continue
-            state, detail = self._node_statuses.get(node_id, ("unknown", ""))
-            failed = state in {"error", "unreachable", "untrusted", "auth"}
-            count = sum(record.node_id == node_id for record in self._sessions.values())
-            node.setText(1, {"untrusted": "主机密钥待核验", "auth": "认证失败"}.get(state, "不可连接")
-                         if failed else f"{count} 个终端")
-            for column in (0, 1):
-                node.setForeground(column, QColor("gray") if failed else QBrush())
-                node.setToolTip(column, detail)
+            if status[0] in {"error", "unreachable", "untrusted", "auth"}:
+                self._resource_values.pop(node_id, None)
+        for node_id in statuses:
+            self._refresh_node(node_id)
 
     def set_resource_usage(self, node_id, cpu, sample, error=""):
         from datetime import datetime
         if sample is None:
             values = ("—", "—", f"资源数据不可用：{error}", "—", f"用户数据不可用：{error}")
         else:
+            updated = f"更新于 {datetime.now():%H:%M:%S}"
             cpu_text = "采样中" if cpu is None else f"{cpu:.1f}%"
             used, total = sample.memory_used / 1024**3, sample.memory_total / 1024**3
             values = (cpu_text, f"{100 * sample.memory_used / sample.memory_total:.0f}% · {used:.1f}/{total:.1f} GiB",
-                      f"更新于 {datetime.now():%H:%M:%S}；整机 CPU（全部逻辑核合计归一为 100%）；"
+                      f"{updated}；整机 CPU（全部逻辑核合计归一为 100%）；"
                       "内存按 MemTotal − MemAvailable 计算。")
             users = sample.users
             users_text = ", ".join(users) if users else ("无" if users is not None else "—")
-            users_tooltip = ("有进程的普通用户（含当前用户）；按服务器 UID_MIN 筛选，排除 nobody。\n"
+            users_tooltip = (f"{updated}\n有进程的普通用户（含当前用户）；按服务器 UID_MIN 筛选，排除 nobody。\n"
                              "不等同于当前登录列表；权限限制可能导致名单不完整。\n" +
                              ("\n".join(users) if users else ("未发现普通用户进程" if users is not None else "无法查询用户进程")))
             values += (users_text, users_tooltip)
         self._resource_values[node_id] = values
+        self._refresh_node(node_id)
+
+    def _refresh_node(self, node_id):
+        # Observers see one complete node row, never a mix of old/new fields.
         for index in range(self.node_tree.topLevelItemCount()):
             item = self.node_tree.topLevelItem(index)
             if item.data(0, ITEM_ROLE) == ("node", node_id):
-                self._paint_resources(item, node_id)
+                model = self.node_tree.model()
+                with QSignalBlocker(model):
+                    self._paint_node(item, node_id)
+                first = self.node_tree.indexFromItem(item, 0)
+                last = self.node_tree.indexFromItem(item, self.node_tree.columnCount() - 1)
+                model.dataChanged.emit(first, last, [])
                 break
+
+    def _paint_node(self, item, node_id):
+        item.setText(0, self._nodes[node_id])
+        state, detail = self._node_statuses.get(node_id, ("unknown", ""))
+        failed = state in {"error", "unreachable", "untrusted", "auth"}
+        count = sum(record.node_id == node_id for record in self._sessions.values())
+        item.setText(1, {"untrusted": "主机密钥待核验", "auth": "认证失败"}.get(state, "不可连接")
+                     if failed else f"{count} 个终端")
+        address = self._node_addresses.get(node_id)
+        item.setToolTip(0, "\n".join(filter(None, (f"连接地址：{address}" if address else "", detail))))
+        item.setToolTip(1, detail)
+        for column in (0, 1):
+            item.setForeground(column, QColor("gray") if failed else QBrush())
+        self._paint_resources(item, node_id)
 
     def _paint_resources(self, item, node_id):
         cpu, memory, tooltip, users, users_tooltip = self._resource_values.get(
@@ -445,6 +469,8 @@ class TerminalWorkspace(QWidget):
     def set_nodes(self, nodes: list[tuple[str, str]]) -> None:
         """Replace available nodes; node IDs are stable and labels are user facing."""
         new_nodes = dict(nodes)
+        if new_nodes == self._nodes:
+            return
         for session_id, record in list(self._sessions.items()):
             if record.node_id not in new_nodes:
                 self._remove_session(session_id)
@@ -461,11 +487,8 @@ class TerminalWorkspace(QWidget):
 
     def set_node_addresses(self, addresses):
         self._node_addresses = dict(addresses)
-        for index in range(self.node_tree.topLevelItemCount()):
-            item = self.node_tree.topLevelItem(index)
-            kind, node_id = item.data(0, ITEM_ROLE)
-            if kind == "node" and node_id in self._node_addresses:
-                item.setToolTip(0, f"连接地址：{self._node_addresses[node_id]}")
+        for node_id in self._nodes:
+            self._refresh_node(node_id)
 
     def create_group(self, node_ids: list[str]) -> str:
         """Create one stable group for a connection batch."""
@@ -594,6 +617,7 @@ class TerminalWorkspace(QWidget):
             QMessageBox.warning(self, "组名无效", "组名须为 1–24 个字符。")
             return
         group.name = name
+        self.groupRenamed.emit(group.group_id, name)
         self._refresh_groups(select=group.group_id)
         self._rebuild_tree()
         self._update_combined_title(group.group_id)
@@ -606,7 +630,7 @@ class TerminalWorkspace(QWidget):
                 self.terminal_tabs.setTabToolTip(index, self.group_name(group.group_id))
 
     def add_terminal(self, node_id: str, title: str | None = None,
-                     group_id: str | None = None, *, activate: bool = True) -> str:
+                     group_id: str | None = None, *, activate: bool = True, persistent: bool = False) -> str:
         """Register a connected shell after its channel has opened."""
         if node_id not in self._nodes:
             raise ValueError(f"节点未连接：{node_id}")
@@ -617,7 +641,7 @@ class TerminalWorkspace(QWidget):
         number = 1 + sum(record.node_id == node_id for record in self._sessions.values())
         session_id = f"terminal-{self._next_session}"
         self._next_session += 1
-        record = TerminalRecord(session_id, node_id, title or f"终端{number}", group_id)
+        record = TerminalRecord(session_id, node_id, title or f"终端{number}", group_id, persistent)
         self._sessions[session_id] = record
         group = self._groups[group_id]
         group.members.append(session_id)
@@ -950,43 +974,66 @@ class TerminalWorkspace(QWidget):
         selected = session_id
         if selected is None and self.node_tree.currentItem() is not None:
             selected = self.node_tree.currentItem().data(0, ITEM_ROLE)[1]
-        with QSignalBlocker(self.node_tree):
-            self.node_tree.clear()
-            selected_item = None
-            for node_id, label in sorted(self._nodes.items(), key=lambda pair: pair[1].casefold()):
-                sessions = [record for record in self._sessions.values() if record.node_id == node_id]
-                node = QTreeWidgetItem(self.node_tree, [label, f"{len(sessions)} 个终端", ""])
-                if node_id in self._node_addresses:
-                    node.setToolTip(0, f"连接地址：{self._node_addresses[node_id]}")
-                status, detail = self._node_statuses.get(node_id, ("unknown", ""))
-                if status in {"error", "unreachable", "untrusted", "auth"}:
-                    node.setText(1, {"untrusted": "主机密钥待核验", "auth": "认证失败"}.get(status, "不可连接"))
-                    for column in (0, 1):
-                        node.setForeground(column, QColor("gray"))
-                        node.setToolTip(column, detail)
-                node.setData(0, ITEM_ROLE, ("node", node_id))
-                self._paint_resources(node, node_id)
-                node.setFlags(node.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-                node.setCheckState(2, Qt.CheckState.Checked if node_id in checked_nodes else Qt.CheckState.Unchecked)
-                if selected == node_id:
-                    selected_item = node
-                for record in sessions:
-                    state = "已断开" if record.session_id in self._closed_sessions else "已连接"
-                    child = QTreeWidgetItem(node, [f"{record.title} · {self._groups[record.group_id].name}", state])
-                    child.setData(0, ITEM_ROLE, ("terminal", record.session_id))
-                    if selected == record.session_id:
-                        selected_item = child
-                node.setExpanded(True)
-            if selected_item is None and self.node_tree.topLevelItemCount():
-                selected_item = self.node_tree.topLevelItem(0)
-            if selected_item is not None:
-                self.node_tree.setCurrentItem(selected_item)
+        scroll = self.node_tree.verticalScrollBar().value()
+        updates_enabled = self.node_tree.updatesEnabled()
+        self.node_tree.setUpdatesEnabled(False)
+        try:
+            with QSignalBlocker(self.node_tree):
+                existing = {self.node_tree.topLevelItem(i).data(0, ITEM_ROLE)[1]: self.node_tree.topLevelItem(i)
+                            for i in range(self.node_tree.topLevelItemCount())}
+                for node_id, item in existing.items():
+                    if node_id not in self._nodes:
+                        self.node_tree.takeTopLevelItem(self.node_tree.indexOfTopLevelItem(item))
+                selected_item = None
+                for position, (node_id, label) in enumerate(sorted(self._nodes.items(), key=lambda pair: pair[1].casefold())):
+                    sessions = [record for record in self._sessions.values() if record.node_id == node_id]
+                    node = existing.get(node_id)
+                    new_node = node is None
+                    if new_node:
+                        node = QTreeWidgetItem()
+                        self.node_tree.insertTopLevelItem(position, node)
+                    elif self.node_tree.indexOfTopLevelItem(node) != position:
+                        self.node_tree.takeTopLevelItem(self.node_tree.indexOfTopLevelItem(node))
+                        self.node_tree.insertTopLevelItem(position, node)
+                    node.setData(0, ITEM_ROLE, ("node", node_id))
+                    self._paint_node(node, node_id)
+                    node.setFlags(node.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                    node.setCheckState(2, Qt.CheckState.Checked if node_id in checked_nodes else Qt.CheckState.Unchecked)
+                    if selected == node_id:
+                        selected_item = node
+                    children = {node.child(i).data(0, ITEM_ROLE)[1]: node.child(i) for i in range(node.childCount())}
+                    retained = {record.session_id for record in sessions}
+                    for sid, child in children.items():
+                        if sid not in retained:
+                            node.takeChild(node.indexOfChild(child))
+                    for record in sessions:
+                        state = "已断开" if record.session_id in self._closed_sessions else "已连接"
+                        if record.persistent:
+                            state += "（tmux）"
+                        child = children.get(record.session_id)
+                        if child is None:
+                            child = QTreeWidgetItem(node)
+                        child.setText(0, f"{record.title} · {self._groups[record.group_id].name}")
+                        child.setText(1, state)
+                        child.setData(0, ITEM_ROLE, ("terminal", record.session_id))
+                        if selected == record.session_id:
+                            selected_item = child
+                    if new_node:
+                        node.setExpanded(True)
+                if selected_item is None and self.node_tree.topLevelItemCount():
+                    selected_item = self.node_tree.topLevelItem(0)
+                if selected_item is not None:
+                    self.node_tree.setCurrentItem(selected_item)
+                self.node_tree.verticalScrollBar().setValue(scroll)
+        finally:
+            self.node_tree.setUpdatesEnabled(updates_enabled)
         self._selection_changed()
         self._update_broadcast_summary()
 
     def _selection_changed(self) -> None:
         node_id = self._selected_node()
         self.new_terminal_button.setEnabled(node_id is not None and not self._busy)
+        self.disconnect_terminal_button.setText("断开终端")
         self.disconnect_terminal_button.setEnabled(self._selected_session() is not None)
         self.connect_checked_button.setEnabled(bool(self.checked_nodes()) and not self._busy)
         self.disconnect_checked_button.setEnabled(bool(self.checked_nodes()) and not self._busy)

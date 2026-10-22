@@ -50,6 +50,28 @@ class ResourceMonitorTests(unittest.TestCase):
         with self.assertRaises(CancelledError):
             query_sample(host, None, cancel)
 
+    def test_monitor_queries_users_again_on_each_node_round(self):
+        monitor = ResourceMonitor(Mock(), None)
+        monitor.set_targets({"worker:cft02": "cft02"})
+        results = []
+        monitor.result.connect(results.append)
+        samples = [Sample(100, 50, 1024, 512, "boot", ("alice",)),
+                   Sample(200, 100, 1024, 512, "boot", ("bob",))]
+        rounds = []
+
+        def wait(_seconds):
+            rounds.append(True)
+            if len(rounds) == 2:
+                monitor.cancel.set()
+
+        with patch("nodebridge.resource_monitor.RemoteSession.connect_shell_host", return_value=Mock()), \
+                patch("nodebridge.resource_monitor.query_sample", side_effect=samples) as query, \
+                patch.object(monitor.cancel, "wait", side_effect=wait):
+            monitor.run()
+        self.assertEqual(query.call_count, 2)
+        self.assertEqual([result[2].users for result in results], [("alice",), ("bob",)])
+        self.assertEqual(results[1][1], 50)
+
     def test_monitor_reuses_dedicated_host_and_closes_on_cancel(self):
         monitor = ResourceMonitor(Mock(), "secret")
         monitor.set_targets({"primary": None, "worker:cft02": "cft02"})

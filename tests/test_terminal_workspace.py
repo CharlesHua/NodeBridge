@@ -39,6 +39,70 @@ class TerminalWorkspaceTests(unittest.TestCase):
         self.assertEqual(item.text(5), "—")
         self.assertEqual(item.text(3), "50.0%")
 
+    def test_node_sample_refreshes_whole_row_and_users_together(self):
+        from nodebridge.resource_monitor import Sample
+        workspace = self.workspace
+        workspace.set_nodes([("a", "node-a"), ("b", "node-b")])
+        group = workspace.create_group(["a"])
+        workspace.add_terminal("a", group_id=group)
+        workspace.set_node_addresses({"a": "10.0.0.1"})
+        workspace.set_resource_usage("a", 10, Sample(100, 50, 1024**3, 512*1024**2, "boot", ("alice",)))
+        item = workspace.node_tree.topLevelItem(0)
+        item.setExpanded(False)
+        item.setCheckState(2, Qt.CheckState.Checked)
+        workspace.node_tree.setCurrentItem(item)
+        observed = []
+
+        def changed(first, last, _roles):
+            observed.append((first.row(), first.column(), last.column(),
+                             tuple(item.text(column) for column in (0, 1, 3, 4, 5))))
+
+        workspace.node_tree.model().dataChanged.connect(changed)
+        workspace.set_resource_usage("a", 75, Sample(200, 75, 1024**3, 768*1024**2, "boot", ("bob", "carol")))
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(observed[0], (0, 0, 5, ("node-a", "1 个终端", "75.0%", "75% · 0.8/1.0 GiB", "bob, carol")))
+        self.assertEqual(item.toolTip(3).split("；")[0], item.toolTip(5).splitlines()[0])
+        self.assertIs(workspace.node_tree.currentItem(), item)
+        self.assertFalse(item.isExpanded())
+        self.assertEqual(item.checkState(2), Qt.CheckState.Checked)
+        self.assertEqual(workspace.node_tree.topLevelItem(1).text(5), "—")
+
+    def test_node_rows_survive_session_changes_and_unchanged_node_sync(self):
+        workspace = self.workspace
+        nodes = [("a", "node-a"), ("b", "node-b")]
+        workspace.set_nodes(nodes)
+        group = workspace.create_group(["a", "b"])
+        first = workspace.add_terminal("a", group_id=group)
+        node = workspace.node_tree.topLevelItem(0)
+        child = node.child(0)
+        node.setExpanded(False)
+        workspace.set_nodes(nodes)
+        second = workspace.add_terminal("b", group_id=group)
+        self.assertIs(workspace.node_tree.topLevelItem(0), node)
+        self.assertIs(node.child(0), child)
+        self.assertFalse(node.isExpanded())
+        workspace.remove_terminal(second)
+        self.assertIs(node.child(0), child)
+        workspace.mark_terminal_closed(first)
+        self.assertIs(node.child(0), child)
+        self.assertIn("已断开", child.text(1))
+
+    def test_failed_node_clears_stale_users_and_recovers_address(self):
+        from nodebridge.resource_monitor import Sample
+        workspace = self.workspace
+        workspace.set_nodes([("a", "node-a")])
+        workspace.set_node_addresses({"a": "10.0.0.1"})
+        workspace.set_resource_usage("a", 10, Sample(100, 50, 1024, 512, "boot", ("alice",)))
+        item = workspace.node_tree.topLevelItem(0)
+        workspace.set_node_statuses({"a": ("unreachable", "offline")})
+        self.assertEqual([item.text(column) for column in (3, 4, 5)], ["—", "—", "—"])
+        self.assertIn("10.0.0.1", item.toolTip(0))
+        self.assertIn("offline", item.toolTip(0))
+        workspace.set_node_statuses({"a": ("reachable", "online")})
+        workspace.set_resource_usage("a", 20, Sample(200, 60, 1024, 512, "boot", ("bob",)))
+        self.assertEqual(item.text(5), "bob")
+        self.assertNotIn("offline", item.toolTip(0))
+
     def test_command_helpers_wrap_when_splitter_narrows_terminal(self):
         workspace = self.workspace
         workspace.resize(1400, 850)

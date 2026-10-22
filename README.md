@@ -10,11 +10,13 @@ NodeBridge 是面向 Windows 的 SSH 多节点文件管理桌面应用，采用 
 - Copy files by dragging between panes, distribute to connected indirect nodes, and collect from them with node-name suffixes to the direct or local pane; confirm remote deletion before it runs.
 - Open multiple xterm.js SSH terminals per node, organize connection batches into editable Terminal Groups, broadcast within the active group, and view group output together in node order.
 - Save site profiles with a choice of plaintext, master-password-protected, or no password storage.
+- Optionally keep terminals running remotely with tmux; inspect and restore their sessions from the Tasks tab.
 
 - 浏览本地、直连跳板节点及多个间接节点的文件，可查看单个间接节点或合并目录。
 - 通过拖放复制文件，可向已连接的多个间接节点并行分发，也可按节点名后缀汇集到直连或本地面板；远程删除前须确认。
 - 每个节点可打开多个 xterm.js SSH 终端；连接批次形成可重命名的终端组，广播仅限当前组，并可按节点顺序联合查看输出。
 - 保存站点资料，并选择明文、主密码保护或不保存密码。
+- 可选用远程 tmux 保留终端，在“任务”页查看和恢复会话。
 
 The project is under active development. Multi-node operations and terminal broadcast still need live verification on the owner's cluster; see [current status](docs/CURRENT_STATUS.md) for the exact implementation boundary.
 
