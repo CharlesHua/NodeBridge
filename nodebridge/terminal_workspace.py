@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from nodebridge.i18n import tr, ui
+
 import re
 from dataclasses import dataclass
 
@@ -227,7 +229,8 @@ class TerminalWorkspace(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(6)
-        notice = QLabel("点击黑色终端区域直接输入；广播命令只发送给当前终端组内勾选的终端。")
+        notice = ui(QLabel, tr('点击黑色终端区域直接输入；广播命令只发送给当前终端组内勾选的终端。'))
+        notice.setWordWrap(True)
         notice.setObjectName("terminalNotice")
         notice.setStyleSheet("QLabel#terminalNotice { background: #fff4d6; padding: 7px; }")
         layout.addWidget(notice)
@@ -237,11 +240,11 @@ class TerminalWorkspace(QWidget):
         left.setObjectName("terminalSidebar")
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.addWidget(QLabel("节点与终端"))
+        left_layout.addWidget(ui(QLabel, tr('节点与终端')))
         self.node_tree = NodeCheckTree(check_column=2)
         self.node_tree.setObjectName("terminalNodes")
         self.node_tree.setAlternatingRowColors(True)
-        self.node_tree.setHeaderLabels(["节点", "状态", "批量选择", "CPU", "内存", "用户"])
+        ui(self.node_tree.setHeaderLabels, [tr('节点'), tr('状态'), tr('批量选择'), "CPU", tr('内存'), tr('用户')])
         self.node_tree.setColumnWidth(0, 125)
         self.node_tree.setColumnWidth(1, 75)
         self.node_tree.setColumnWidth(2, 80)
@@ -254,30 +257,30 @@ class TerminalWorkspace(QWidget):
         self.node_tree.itemChanged.connect(self._item_changed)
         self.node_tree.currentItemChanged.connect(lambda *_: self._selection_changed())
         left_layout.addWidget(self.node_tree, 1)
-        left_layout.addWidget(QLabel("当前终端组（广播严格限于本组）"))
+        left_layout.addWidget(ui(QLabel, tr('当前终端组（广播严格限于本组）')))
         group_row = QHBoxLayout()
         self.group_selector = QComboBox()
         self.group_selector.setObjectName("terminalGroupSelector")
         self.group_selector.currentIndexChanged.connect(self._group_changed)
         group_row.addWidget(self.group_selector, 1)
-        self.rename_group_button = QPushButton("重命名")
+        self.rename_group_button = ui(QPushButton, tr('重命名'))
         self.rename_group_button.setEnabled(False)
         self.rename_group_button.clicked.connect(self._rename_group)
         group_row.addWidget(self.rename_group_button)
-        self.disconnect_group_button = QPushButton("断开当前组")
+        self.disconnect_group_button = ui(QPushButton, tr('断开当前组'))
         self.disconnect_group_button.setEnabled(False)
         self.disconnect_group_button.clicked.connect(self._request_disconnect_group)
         group_row.addWidget(self.disconnect_group_button)
         left_layout.addLayout(group_row)
         self.group_tree = QTreeWidget()
         self.group_tree.setObjectName("terminalGroupMembers")
-        self.group_tree.setHeaderLabels(["本组广播目标", "终端状态"])
+        ui(self.group_tree.setHeaderLabels, [tr('本组广播目标'), tr('终端状态')])
         self.group_tree.setMinimumHeight(115)
         self.group_tree.itemChanged.connect(self._group_member_changed)
         left_layout.addWidget(self.group_tree, 0)
         batch_row = QHBoxLayout()
-        self.connect_checked_button = QPushButton("连接勾选节点")
-        self.disconnect_checked_button = QPushButton("断开勾选节点终端")
+        self.connect_checked_button = ui(QPushButton, tr('连接勾选节点'))
+        self.disconnect_checked_button = ui(QPushButton, tr('断开勾选节点终端'))
         self.connect_checked_button.setObjectName("terminalBatchAction")
         self.disconnect_checked_button.setObjectName("terminalBatchAction")
         self.connect_checked_button.clicked.connect(self._connect_checked)
@@ -286,18 +289,18 @@ class TerminalWorkspace(QWidget):
         batch_row.addWidget(self.disconnect_checked_button)
         left_layout.addLayout(batch_row)
         persistent_row = QHBoxLayout()
-        self.persistent_mode = QCheckBox("持久终端（tmux）")
-        self.persistent_mode.setToolTip("新建终端使用远程 tmux；断开连接后保留任务，需要目标节点安装 tmux 3.1+。")
+        self.persistent_mode = ui(QCheckBox, tr('持久终端（tmux）'))
+        ui(self.persistent_mode.setToolTip, tr('新建终端使用远程 tmux；断开连接后保留任务，需要目标节点安装 tmux 3.1+。'))
         persistent_row.addWidget(self.persistent_mode)
-        self.recover_persistent_button = QPushButton("恢复持久会话…")
+        self.recover_persistent_button = ui(QPushButton, tr('恢复持久会话…'))
         self.recover_persistent_button.clicked.connect(self.recoverPersistentRequested)
         persistent_row.addWidget(self.recover_persistent_button)
         left_layout.addLayout(persistent_row)
-        self.new_terminal_button = QPushButton("新建终端")
+        self.new_terminal_button = ui(QPushButton, tr('新建终端'))
         self.new_terminal_button.setObjectName("terminalAction")
         self.new_terminal_button.clicked.connect(self._new_terminal)
         left_layout.addWidget(self.new_terminal_button)
-        self.disconnect_terminal_button = QPushButton("断开终端")
+        self.disconnect_terminal_button = ui(QPushButton, tr('断开终端'))
         self.disconnect_terminal_button.setObjectName("terminalAction")
         self.disconnect_terminal_button.clicked.connect(self._disconnect_terminal)
         left_layout.addWidget(self.disconnect_terminal_button)
@@ -307,7 +310,7 @@ class TerminalWorkspace(QWidget):
         right.setObjectName("terminalMain")
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.addWidget(QLabel("终端标签  ·  关闭标签只隐藏视图"))
+        right_layout.addWidget(ui(QLabel, tr('终端标签  ·  关闭标签只隐藏视图')))
         self.terminal_tabs = QTabWidget()
         self.terminal_tabs.setTabBar(BoundedTerminalTabBar(self.terminal_tabs))
         self.terminal_tabs.setObjectName("terminalTabs")
@@ -315,7 +318,7 @@ class TerminalWorkspace(QWidget):
         self.terminal_tabs.tabBar().setUsesScrollButtons(True)
         self.terminal_tabs.tabCloseRequested.connect(self._hide_tab)
         self.terminal_tabs.currentChanged.connect(self._tab_changed)
-        self.tab_list_menu = QMenu(self.terminal_tabs)
+        self.tab_list_menu = ui(QMenu, self.terminal_tabs)
         self.tab_list_menu.setObjectName("terminalTabListMenu")
         self.tab_list_menu.aboutToShow.connect(self._populate_tab_list)
         self.tab_list_button = QToolButton(self.terminal_tabs)
@@ -323,7 +326,7 @@ class TerminalWorkspace(QWidget):
         self.tab_list_button.setArrowType(Qt.ArrowType.DownArrow)
         self.tab_list_button.setAutoRaise(True)
         self.tab_list_button.setFixedSize(22, 22)
-        self.tab_list_button.setToolTip("列出所有终端标签")
+        ui(self.tab_list_button.setToolTip, tr('列出所有终端标签'))
         self.tab_list_button.setMenu(self.tab_list_menu)
         self.tab_list_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.terminal_tabs.setCornerWidget(self.tab_list_button, Qt.Corner.TopRightCorner)
@@ -337,7 +340,7 @@ class TerminalWorkspace(QWidget):
         broadcast_layout = QVBoxLayout(broadcast)
         broadcast_layout.setContentsMargins(8, 6, 8, 6)
         header = QHBoxLayout()
-        header.addWidget(QLabel("广播命令"))
+        header.addWidget(ui(QLabel, tr('广播命令')))
         self.broadcast_summary = QLabel()
         self.broadcast_summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         header.addWidget(self.broadcast_summary, 1)
@@ -345,18 +348,18 @@ class TerminalWorkspace(QWidget):
         command_row = QHBoxLayout()
         self.broadcast_input = BroadcastCommandInput()
         self.broadcast_input.setObjectName("terminalBroadcastInput")
-        self.broadcast_input.setPlaceholderText("Enter 发送，Shift+Enter 换行；仅发送给当前组勾选的终端")
+        ui(self.broadcast_input.setPlaceholderText, tr('Enter 发送，Shift+Enter 换行；仅发送给当前组勾选的终端'))
         self.broadcast_input.setEnabled(False)
         self.broadcast_input.textChanged.connect(self._update_broadcast_summary)
         self.broadcast_input.returnPressed.connect(self._request_broadcast)
         self.broadcast_input.inputFocused.connect(lambda: self._set_command_target("broadcast"))
-        self.send_button = QPushButton("发送命令")
+        self.send_button = ui(QPushButton, tr('发送命令'))
         self.send_button.setObjectName("terminalAction")
         self.send_button.setEnabled(False)
         self.send_button.clicked.connect(self._request_broadcast)
-        self.interrupt_button = QPushButton("中断（Ctrl+C）")
+        self.interrupt_button = ui(QPushButton, tr('中断（Ctrl+C）'))
         self.interrupt_button.setEnabled(False)
-        self.interrupt_button.setToolTip("确认后向当前组勾选的终端发送 Ctrl+C，每个节点一次")
+        ui(self.interrupt_button.setToolTip, tr('确认后向当前组勾选的终端发送 Ctrl+C，每个节点一次'))
         self.interrupt_button.clicked.connect(self._request_interrupt)
         header.addWidget(self.interrupt_button)
         command_row.addWidget(self.broadcast_input, 1)
@@ -366,7 +369,7 @@ class TerminalWorkspace(QWidget):
         self.command_toolbar.setObjectName("terminalCommandHelpers")
         self.command_layout = FlowLayout(self.command_toolbar)
         self.command_toolbar.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
-        self.command_toolbar.setToolTip("替换当前输入，不会立即执行")
+        ui(self.command_toolbar.setToolTip, tr('替换当前输入，不会立即执行'))
         self.command_helpers: list[QPushButton] = []
         self.set_commands(DEFAULT_COMMANDS)
         right_layout.addWidget(broadcast)
@@ -376,20 +379,42 @@ class TerminalWorkspace(QWidget):
         layout.addWidget(splitter, 1)
         self._rebuild_tree()
 
+    def refresh_language(self):
+        from dataclasses import replace
+        from nodebridge.i18n import DisplayText
+        for group in self._groups.values():
+            if isinstance(group.name, DisplayText):
+                value = group.name
+                group.name = DisplayText(value.source, value.values, value.parts)
+        for session_id, record in list(self._sessions.items()):
+            if isinstance(record.title, DisplayText):
+                value = record.title
+                self._sessions[session_id] = replace(record, title=DisplayText(value.source, value.values, value.parts))
+        self._refresh_groups()
+        self._rebuild_tree()
+        for node in self._nodes:
+            self._refresh_node_tab_titles(node)
+        for group_id, pane in self._combined_views.items():
+            index = self.terminal_tabs.indexOf(pane)
+            if index >= 0:
+                ui(self.terminal_tabs.setTabText, index, tr('联合 · {0}', self._groups[group_id].name))
+        self._update_broadcast_summary()
+
     def set_commands(self, commands):
         while self.command_layout.count():
             item = self.command_layout.takeAt(0)
             item.widget().hide()
             item.widget().deleteLater()
         self.command_helpers.clear()
-        self.command_layout.addWidget(QLabel("常用命令："))
+        self.command_layout.addWidget(ui(QLabel, tr('常用命令：')))
         for item in commands:
             if not item["visible"]:
                 continue
             label = item["command"].strip()
             if item["description"]:
-                label += f"（{item['description']}）"
-            button = QPushButton(label)
+                description = tr(item["description"]) if item in DEFAULT_COMMANDS else item["description"]
+                label += "（" + description + "）"
+            button = ui(QPushButton, label)
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             button.clicked.connect(lambda _checked=False, value=item["command"]: self._insert_command_snippet(value))
             self.command_helpers.append(button)
@@ -412,19 +437,17 @@ class TerminalWorkspace(QWidget):
     def set_resource_usage(self, node_id, cpu, sample, error=""):
         from datetime import datetime
         if sample is None:
-            values = ("—", "—", f"资源数据不可用：{error}", "—", f"用户数据不可用：{error}")
+            values = ("—", "—", tr('资源数据不可用：{0}', f'{error}'), "—", tr('用户数据不可用：{0}', f'{error}'))
         else:
-            updated = f"更新于 {datetime.now():%H:%M:%S}"
-            cpu_text = "采样中" if cpu is None else f"{cpu:.1f}%"
+            updated = tr('更新于 {0}', f'{datetime.now():%H:%M:%S}')
+            cpu_text = tr('采样中') if cpu is None else f"{cpu:.1f}%"
             used, total = sample.memory_used / 1024**3, sample.memory_total / 1024**3
             values = (cpu_text, f"{100 * sample.memory_used / sample.memory_total:.0f}% · {used:.1f}/{total:.1f} GiB",
-                      f"{updated}；整机 CPU（全部逻辑核合计归一为 100%）；"
-                      "内存按 MemTotal − MemAvailable 计算。")
+                      tr('{0}；整机 CPU（全部逻辑核合计归一为 100%）；内存按 MemTotal − MemAvailable 计算。', f'{updated}'))
             users = sample.users
-            users_text = ", ".join(users) if users else ("无" if users is not None else "—")
-            users_tooltip = (f"{updated}\n有进程的普通用户（含当前用户）；按服务器 UID_MIN 筛选，排除 nobody。\n"
-                             "不等同于当前登录列表；权限限制可能导致名单不完整。\n" +
-                             ("\n".join(users) if users else ("未发现普通用户进程" if users is not None else "无法查询用户进程")))
+            users_text = ", ".join(users) if users else (tr('无') if users is not None else "—")
+            users_tooltip = (tr('{0}\n有进程的普通用户（含当前用户）；按服务器 UID_MIN 筛选，排除 nobody。\n不等同于当前登录列表；权限限制可能导致名单不完整。\n', f'{updated}') +
+                             ("\n".join(users) if users else (tr('未发现普通用户进程') if users is not None else tr('无法查询用户进程'))))
             values += (users_text, users_tooltip)
         self._resource_values[node_id] = values
         self._refresh_node(node_id)
@@ -443,28 +466,27 @@ class TerminalWorkspace(QWidget):
                 break
 
     def _paint_node(self, item, node_id):
-        item.setText(0, self._nodes[node_id])
+        ui(item.setText, 0, self._nodes[node_id])
         state, detail = self._node_statuses.get(node_id, ("unknown", ""))
         failed = state in {"error", "unreachable", "untrusted", "auth"}
         count = sum(record.node_id == node_id for record in self._sessions.values())
-        item.setText(1, {"untrusted": "主机密钥待核验", "auth": "认证失败"}.get(state, "不可连接")
-                     if failed else f"{count} 个终端")
+        ui(item.setText, 1, ({"untrusted": tr('主机密钥待核验'), "auth": tr('认证失败')}.get(state, tr('不可连接')) if failed else tr('{0} 个终端', f'{count}')))
         address = self._node_addresses.get(node_id)
-        item.setToolTip(0, "\n".join(filter(None, (f"连接地址：{address}" if address else "", detail))))
-        item.setToolTip(1, detail)
+        ui(item.setToolTip, 0, "\n".join(filter(None, (tr('连接地址：{0}', f'{address}') if address else "", detail))))
+        ui(item.setToolTip, 1, detail)
         for column in (0, 1):
             item.setForeground(column, QColor("gray") if failed else QBrush())
         self._paint_resources(item, node_id)
 
     def _paint_resources(self, item, node_id):
         cpu, memory, tooltip, users, users_tooltip = self._resource_values.get(
-            node_id, ("—", "—", "尚未采集资源数据", "—", "尚未采集用户数据"))
+            node_id, ("—", "—", tr('尚未采集资源数据'), "—", tr('尚未采集用户数据')))
         for column, text in ((3, cpu), (4, memory)):
-            item.setText(column, text)
-            item.setToolTip(column, tooltip)
+            ui(item.setText, column, text)
+            ui(item.setToolTip, column, tooltip)
             item.setTextAlignment(column, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        item.setText(5, users)
-        item.setToolTip(5, users_tooltip)
+        ui(item.setText, 5, users)
+        ui(item.setToolTip, 5, users_tooltip)
 
     def set_nodes(self, nodes: list[tuple[str, str]]) -> None:
         """Replace available nodes; node IDs are stable and labels are user facing."""
@@ -496,7 +518,7 @@ class TerminalWorkspace(QWidget):
         number = self._next_group
         self._next_group += 1
         self._groups[group_id] = TerminalGroup(
-            group_id, f"终端组{number}", list(dict.fromkeys(node_ids)), [], set()
+            group_id, tr("终端组{0}", number), list(dict.fromkeys(node_ids)), [], set()
         )
         self._refresh_groups(select=group_id)
         return group_id
@@ -529,7 +551,7 @@ class TerminalWorkspace(QWidget):
             self._combined_views[group_id] = pane
         index = self.terminal_tabs.indexOf(pane)
         if index < 0:
-            index = self.terminal_tabs.addTab(pane, f"联合 · {self._groups[group_id].name}")
+            index = ui(self.terminal_tabs.addTab, pane, tr('联合 · {0}', f'{self._groups[group_id].name}'))
         self.terminal_tabs.setCurrentIndex(index)
         self._render_combined(group_id)
 
@@ -557,7 +579,7 @@ class TerminalWorkspace(QWidget):
         if pane is not None:
             index = self.terminal_tabs.indexOf(pane)
             if index >= 0:
-                self.terminal_tabs.setTabText(index, f"联合 · {self._groups[group_id].name}")
+                ui(self.terminal_tabs.setTabText, index, tr('联合 · {0}', f'{self._groups[group_id].name}'))
             self._render_combined(group_id)
 
     def _render_combined(self, group_id: str) -> None:
@@ -609,12 +631,12 @@ class TerminalWorkspace(QWidget):
         group = self._groups.get(self.active_group_id())
         if group is None or self._broadcast_busy:
             return
-        name, accepted = QInputDialog.getText(self, "重命名终端组", "组名：", text=group.name)
+        name, accepted = QInputDialog.getText(self, tr('重命名终端组'), tr('组名：'), text=group.name)
         if not accepted:
             return
         name = name.strip()
         if not name or len(name) > 24:
-            QMessageBox.warning(self, "组名无效", "组名须为 1–24 个字符。")
+            QMessageBox.warning(self, tr('组名无效'), tr('组名须为 1–24 个字符。'))
             return
         group.name = name
         self.groupRenamed.emit(group.group_id, name)
@@ -626,7 +648,7 @@ class TerminalWorkspace(QWidget):
             index = self.terminal_tabs.indexOf(view) if view is not None else -1
             if index >= 0:
                 record = self._sessions[session_id]
-                self.terminal_tabs.setTabText(index, self._terminal_tab_title(record))
+                ui(self.terminal_tabs.setTabText, index, self._terminal_tab_title(record))
                 self.terminal_tabs.setTabToolTip(index, self.group_name(group.group_id))
 
     def add_terminal(self, node_id: str, title: str | None = None,
@@ -641,7 +663,7 @@ class TerminalWorkspace(QWidget):
         number = 1 + sum(record.node_id == node_id for record in self._sessions.values())
         session_id = f"terminal-{self._next_session}"
         self._next_session += 1
-        record = TerminalRecord(session_id, node_id, title or f"终端{number}", group_id, persistent)
+        record = TerminalRecord(session_id, node_id, title or tr("终端{0}", number), group_id, persistent)
         self._sessions[session_id] = record
         group = self._groups[group_id]
         group.members.append(session_id)
@@ -672,7 +694,7 @@ class TerminalWorkspace(QWidget):
         view = self._views.get(session_id)
         if view is not None:
             view.output.set_input_enabled(False)
-            view.output.write("\r\n[SSH Shell 已关闭；输出保留供查看]\r\n")
+            view.output.write("\r\n[" + tr("SSH Shell 已关闭；终端输出仍可查看。") + "]\r\n")
         self._rebuild_tree(session_id=session_id)
         self._refresh_groups()
         self._update_command_helpers()
@@ -793,7 +815,7 @@ class TerminalWorkspace(QWidget):
         with QSignalBlocker(self.group_selector):
             self.group_selector.clear()
             for group in self._groups.values():
-                self.group_selector.addItem(self.group_name(group.group_id), group.group_id)
+                ui(self.group_selector.addItem, self.group_name(group.group_id), group.group_id)
             index = self.group_selector.findData(select or previous)
             if index >= 0:
                 self.group_selector.setCurrentIndex(index)
@@ -826,9 +848,9 @@ class TerminalWorkspace(QWidget):
                     if record is None:
                         continue
                     live = session_id not in self._closed_sessions
-                    item = QTreeWidgetItem(self.group_tree, [
+                    item = ui(QTreeWidgetItem, self.group_tree, [
                         f"{self.node_label(record.node_id)} · {record.title}",
-                        "已连接" if live else "已断开",
+                        tr("已连接") if live else tr("已断开"),
                     ])
                     item.setData(0, ITEM_ROLE, session_id)
                     if live:
@@ -930,7 +952,7 @@ class TerminalWorkspace(QWidget):
             return
         kind, session_id = target
         if kind == "broadcast":
-            self.broadcast_input.setText(snippet)
+            ui(self.broadcast_input.setText, snippet)
             self.broadcast_input.setCursorPosition(len(snippet))
             self.broadcast_input.setFocus()
             return
@@ -1012,9 +1034,9 @@ class TerminalWorkspace(QWidget):
                             state += "（tmux）"
                         child = children.get(record.session_id)
                         if child is None:
-                            child = QTreeWidgetItem(node)
-                        child.setText(0, f"{record.title} · {self._groups[record.group_id].name}")
-                        child.setText(1, state)
+                            child = ui(QTreeWidgetItem, node)
+                        ui(child.setText, 0, f"{record.title} · {self._groups[record.group_id].name}")
+                        ui(child.setText, 1, tr(state))
                         child.setData(0, ITEM_ROLE, ("terminal", record.session_id))
                         if selected == record.session_id:
                             selected_item = child
@@ -1033,7 +1055,7 @@ class TerminalWorkspace(QWidget):
     def _selection_changed(self) -> None:
         node_id = self._selected_node()
         self.new_terminal_button.setEnabled(node_id is not None and not self._busy)
-        self.disconnect_terminal_button.setText("断开终端")
+        ui(self.disconnect_terminal_button.setText, tr('断开终端'))
         self.disconnect_terminal_button.setEnabled(self._selected_session() is not None)
         self.connect_checked_button.setEnabled(bool(self.checked_nodes()) and not self._busy)
         self.disconnect_checked_button.setEnabled(bool(self.checked_nodes()) and not self._busy)
@@ -1062,7 +1084,7 @@ class TerminalWorkspace(QWidget):
             self._views[session_id] = view
         index = self.terminal_tabs.indexOf(view)
         if index < 0:
-            index = self.terminal_tabs.addTab(view, self._terminal_tab_title(record))
+            index = ui(self.terminal_tabs.addTab, view, self._terminal_tab_title(record))
             self.terminal_tabs.setTabToolTip(index, self.group_name(record.group_id))
         if not activate:
             return
@@ -1084,14 +1106,14 @@ class TerminalWorkspace(QWidget):
             view = self._views.get(record.session_id)
             index = self.terminal_tabs.indexOf(view) if view is not None else -1
             if index >= 0:
-                self.terminal_tabs.setTabText(index, self._terminal_tab_title(record))
+                ui(self.terminal_tabs.setTabText, index, self._terminal_tab_title(record))
 
     def _populate_tab_list(self) -> None:
         self.tab_list_menu.clear()
         current = self.terminal_tabs.currentWidget()
         for index in range(self.terminal_tabs.count()):
             widget = self.terminal_tabs.widget(index)
-            action = self.tab_list_menu.addAction(self.terminal_tabs.tabText(index))
+            action = ui(self.tab_list_menu.addAction, self.terminal_tabs.tabText(index))
             action.setCheckable(True)
             action.setChecked(widget is current)
             action.triggered.connect(
@@ -1100,7 +1122,7 @@ class TerminalWorkspace(QWidget):
 
         for group_id, pane in self._combined_views.items():
             if self.terminal_tabs.indexOf(pane) < 0 and group_id in self._groups:
-                action = self.tab_list_menu.addAction(f"重新打开联合 · {self._groups[group_id].name}")
+                action = ui(self.tab_list_menu.addAction, tr('重新打开联合 · {0}', f'{self._groups[group_id].name}'))
                 action.triggered.connect(
                     lambda _checked=False, gid=group_id: self.show_group_combined(gid)
                 )
@@ -1183,22 +1205,22 @@ class TerminalWorkspace(QWidget):
     def _update_broadcast_summary(self, _checked: bool = False) -> None:
         targets = self.broadcast_targets()
         group_id = self.active_group_id()
-        group_name = self.group_name(group_id) if group_id else "无终端组"
+        group_name = self.group_name(group_id) if group_id else tr('无终端组')
         enabled = group_id is not None and not self._broadcast_busy and not self._busy
         self.broadcast_input.setEnabled(enabled)
         self._update_command_helpers()
         self.send_button.setEnabled(enabled and bool(targets) and bool(self.broadcast_input.text().strip()))
         self.interrupt_button.setEnabled(enabled and bool(targets))
         if self._broadcast_busy:
-            self.broadcast_summary.setText(f"{group_name} · 正在检查各终端工作目录…")
-            self.broadcast_summary.setToolTip("")
+            ui(self.broadcast_summary.setText, tr('{0} · 正在检查各终端工作目录…', f'{group_name}'))
+            ui(self.broadcast_summary.setToolTip, "")
         elif targets:
             labels = [self._nodes[node_id] for node_id in targets]
-            preview = ", ".join(labels[:3]) + (" 等" if len(labels) > 3 else "")
-            self.broadcast_summary.setText(
-                f"{group_name} · {len(targets)} 个目标：{preview} · 严格组内广播"
+            preview = ", ".join(labels[:3]) + (tr(' 等') if len(labels) > 3 else "")
+            ui(self.broadcast_summary.setText,
+                tr('{0} · {1} 个目标：{2} · 严格组内广播', f'{group_name}', f'{len(targets)}', f'{preview}')
             )
-            self.broadcast_summary.setToolTip("广播目标：" + ", ".join(labels))
+            ui(self.broadcast_summary.setToolTip, tr('广播目标：') + ", ".join(labels))
         else:
-            self.broadcast_summary.setText(f"{group_name} · 在本组成员列表勾选目标")
-            self.broadcast_summary.setToolTip("")
+            ui(self.broadcast_summary.setText, tr('{0} · 在本组成员列表勾选目标', f'{group_name}'))
+            ui(self.broadcast_summary.setToolTip, "")

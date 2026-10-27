@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from nodebridge.i18n import tr, ui
+
 import json
 import errno
 import logging
@@ -200,7 +202,7 @@ class FilenameRenameDelegate(QStyledItemDelegate):
 
     def setEditorData(self, editor, index):
         name = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
-        editor.setText(name)
+        ui(editor.setText, name)
         dot = name.rfind(".")
         if self._is_directory(index) or dot <= 0:
             editor.selectAll()
@@ -223,7 +225,7 @@ class MainWindow(QMainWindow):
     def __init__(self, settings: QSettings | None = None, *, log_path: Path | None = None):
         super().__init__()
         self._terminal_render_surface = prepare_terminal_rendering(self)
-        self.setWindowTitle("NodeBridge — 多节点文件浏览")
+        ui(self.setWindowTitle, tr('NodeBridge — 多节点文件浏览'))
         self.resize(1550, 850)
         self._settings = settings if settings is not None else default_settings()
         self._session: RemoteSession | None = None
@@ -299,36 +301,38 @@ class MainWindow(QMainWindow):
         self._broadcast_timer.timeout.connect(self._finish_broadcast_check)
         self.autoCheckProgress.connect(self._auto_check_progress)
 
-        self.file_menu = QMenu("文件", self.menuBar())
-        self.menuBar().addMenu(self.file_menu)
-        self.file_menu.addAction("退出", self.close)
-        self.view_menu = QMenu("查看", self.menuBar())
-        self.menuBar().addMenu(self.view_menu)
-        self.show_local_action = self.view_menu.addAction("查看本地站点")
+        self.file_menu = ui(QMenu, tr('文件'), self.menuBar())
+        ui(self.menuBar().addMenu, self.file_menu)
+        ui(self.file_menu.addAction, tr('退出'), self.close)
+        self.view_menu = ui(QMenu, tr('查看'), self.menuBar())
+        ui(self.menuBar().addMenu, self.view_menu)
+        from nodebridge.i18n import add_language_menu
+        self.language_menu = add_language_menu(self, self.view_menu, self._settings)
+        self.show_local_action = ui(self.view_menu.addAction, tr('查看本地站点'))
         self.show_local_action.setCheckable(True)
         self.show_local_action.setChecked(
             self._settings.value("view/show_local_site", True, type=bool)
         )
         self.show_local_action.toggled.connect(self._set_local_visible)
-        self.show_workers_action = self.view_menu.addAction("查看间接节点")
+        self.show_workers_action = ui(self.view_menu.addAction, tr('查看间接节点'))
         self.show_workers_action.setCheckable(True)
         self.show_workers_action.setChecked(
             self._settings.value("view/show_indirect_nodes", True, type=bool)
         )
         self.show_workers_action.toggled.connect(self._set_workers_visible)
-        self.show_log_action = self.view_menu.addAction("查看日志")
+        self.show_log_action = ui(self.view_menu.addAction, tr('查看日志'))
         self.show_log_action.setCheckable(True)
         self.show_log_action.setChecked(
             self._settings.value("view/show_operation_log", True, type=bool)
         )
         self.show_log_action.toggled.connect(self._set_operation_log_visible)
-        self.view_menu.addAction("打开日志文件", self._open_log_file)
-        self.tools_menu = self.menuBar().addMenu("工具")
-        self.tools_menu.addAction("常用命令管理", self._manage_commands)
-        self.help_menu = QMenu("帮助", self.menuBar())
-        self.menuBar().addMenu(self.help_menu)
-        self.help_menu.addAction("使用指南", self._show_user_guide)
-        self.help_menu.addAction("关于 NodeBridge", self._show_about)
+        ui(self.view_menu.addAction, tr('打开日志文件'), self._open_log_file)
+        self.tools_menu = ui(self.menuBar().addMenu, tr('工具'))
+        ui(self.tools_menu.addAction, tr('常用命令管理'), self._manage_commands)
+        self.help_menu = ui(QMenu, tr('帮助'), self.menuBar())
+        ui(self.menuBar().addMenu, self.help_menu)
+        ui(self.help_menu.addAction, tr('使用指南'), self._show_user_guide)
+        ui(self.help_menu.addAction, tr('关于 NodeBridge'), self._show_about)
 
         body = QWidget(self)
         layout = QVBoxLayout(body)
@@ -336,32 +340,32 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(body)
 
         quick = QHBoxLayout()
-        self.site_button = QPushButton("站点管理器…")
+        self.site_button = ui(QPushButton, tr('站点管理器…'))
         self.site_button.clicked.connect(self._open_site_manager)
         quick.addWidget(self.site_button)
         self.host = QLineEdit()
-        self.host.setPlaceholderText("主机")
+        ui(self.host.setPlaceholderText, tr('主机'))
         self.port = QSpinBox()
         self.port.setRange(1, 65535)
         self.port.setValue(22)
         self.user = QLineEdit()
-        self.user.setPlaceholderText("用户名")
+        ui(self.user.setPlaceholderText, tr('用户名'))
         self.key_file = QLineEdit()
-        self.key_file.setPlaceholderText("可选：私钥文件路径")
+        ui(self.key_file.setPlaceholderText, tr('可选：私钥文件路径'))
         self.password = QLineEdit()
         self.password.setEchoMode(QLineEdit.EchoMode.Password)
-        self.password.setPlaceholderText("密码（可选）")
-        quick.addWidget(QLabel("主机:"))
+        ui(self.password.setPlaceholderText, tr('密码（可选）'))
+        quick.addWidget(ui(QLabel, tr('主机:')))
         quick.addWidget(self.host, 3)
-        quick.addWidget(QLabel("用户名:"))
+        quick.addWidget(ui(QLabel, tr('用户名:')))
         quick.addWidget(self.user, 2)
-        quick.addWidget(QLabel("密码:"))
+        quick.addWidget(ui(QLabel, tr('密码:')))
         quick.addWidget(self.password, 2)
-        quick.addWidget(QLabel("端口:"))
+        quick.addWidget(ui(QLabel, tr('端口:')))
         quick.addWidget(self.port)
-        self.connect_button = QPushButton("连接")
-        self.jump_button = QPushButton("添加间接节点…")
-        self.disconnect_button = QPushButton("断开")
+        self.connect_button = ui(QPushButton, tr('连接'))
+        self.jump_button = ui(QPushButton, tr('添加间接节点…'))
+        self.disconnect_button = ui(QPushButton, tr('断开'))
         self.connect_button.clicked.connect(self._connect)
         self.jump_button.clicked.connect(self._add_worker_alias)
         self.disconnect_button.clicked.connect(self._disconnect)
@@ -371,11 +375,11 @@ class MainWindow(QMainWindow):
         layout.addLayout(quick)
 
         key_row = QHBoxLayout()
-        key_row.addWidget(QLabel("私钥路径:"))
+        key_row.addWidget(ui(QLabel, tr('私钥路径:')))
         key_row.addWidget(self.key_file, 1)
         layout.addLayout(key_row)
 
-        self.status = QLabel("未连接。主机密钥须已存在于 OpenSSH known_hosts。")
+        self.status = ui(QLabel, tr('未连接。主机密钥须已存在于 OpenSSH known_hosts。'))
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
         self.transferProgress.connect(self.status.setText)
@@ -386,7 +390,7 @@ class MainWindow(QMainWindow):
         file_layout = QVBoxLayout(self.file_view)
         file_layout.setContentsMargins(0, 0, 0, 0)
         file_layout.setSpacing(5)
-        self.workspace_tabs.addTab(self.file_view, "文件")
+        ui(self.workspace_tabs.addTab, self.file_view, tr('文件'))
         self.terminal_workspace = TerminalWorkspace()
         self.terminal_workspace.set_commands(load_commands(self._settings))
         self.terminal_workspace.connectRequested.connect(self._connect_terminal)
@@ -401,7 +405,7 @@ class MainWindow(QMainWindow):
         self._terminal_manager.outputReady.connect(self._terminal_output)
         self._terminal_manager.terminalClosed.connect(self._terminal_closed)
         self._terminal_manager.inputFailed.connect(self._terminal_input_failed)
-        self.workspace_tabs.addTab(self.terminal_workspace, "终端")
+        ui(self.workspace_tabs.addTab, self.terminal_workspace, tr('终端'))
         self.terminal_workspace.persistent_mode.setChecked(
             self._settings.value("terminal/persistent_mode", False, type=bool))
         self.terminal_workspace.persistent_mode.toggled.connect(
@@ -416,7 +420,7 @@ class MainWindow(QMainWindow):
         self.tasks_workspace.restoreManyRequested.connect(self._restore_tmux_tasks)
         self.tasks_workspace.detachManyRequested.connect(self._detach_tmux_tasks)
         self.tasks_workspace.terminateManyRequested.connect(self._terminate_tmux_tasks)
-        self.workspace_tabs.addTab(self.tasks_workspace, "任务")
+        ui(self.workspace_tabs.addTab, self.tasks_workspace, tr('任务'))
         self._refresh_tmux_tasks()
         self.workspace_tabs.currentChanged.connect(self._workspace_changed)
         self.workspace_splitter = QSplitter(Qt.Orientation.Vertical)
@@ -426,11 +430,11 @@ class MainWindow(QMainWindow):
         log_layout = QVBoxLayout(self.log_panel)
         log_layout.setContentsMargins(0, 0, 0, 0)
         log_layout.setSpacing(3)
-        log_layout.addWidget(QLabel("操作日志（界面仅本次运行；文件会保存）"))
+        log_layout.addWidget(ui(QLabel, tr('操作日志（界面仅本次运行；文件会保存）')))
         self.operation_log = QPlainTextEdit()
         self.operation_log.setReadOnly(True)
         self.operation_log.setMinimumHeight(45)
-        self.operation_log.setPlaceholderText("文件操作、连接和广播的结果会显示在这里。")
+        ui(self.operation_log.setPlaceholderText, tr('文件操作、连接和广播的结果会显示在这里。'))
         log_layout.addWidget(self.operation_log)
         self.workspace_splitter.addWidget(self.log_panel)
         self.workspace_splitter.setStretchFactor(0, 1)
@@ -456,16 +460,16 @@ class MainWindow(QMainWindow):
         remote_layout = QVBoxLayout(remote)
         remote_layout.setContentsMargins(2, 2, 2, 2)
         remote_layout.setSpacing(5)
-        self.jump_title = QLabel("直连节点 · 尚未连接")
+        self.jump_title = ui(QLabel, tr('直连节点 · 尚未连接'))
         self.jump_title.setFixedHeight(28)
         remote_layout.addWidget(self.jump_title)
 
         navigation = QHBoxLayout()
-        navigation.addWidget(QLabel("直连节点:"))
+        navigation.addWidget(ui(QLabel, tr('直连节点:')))
         self.path_edit = QLineEdit()
-        self.path_edit.setPlaceholderText("远程 POSIX 路径")
-        self.up_button = QPushButton("上一级")
-        self.refresh_button = QPushButton("刷新")
+        ui(self.path_edit.setPlaceholderText, tr('远程 POSIX 路径'))
+        self.up_button = ui(QPushButton, tr('上一级'))
+        self.refresh_button = ui(QPushButton, tr('刷新'))
         self.up_button.clicked.connect(self._up)
         self.refresh_button.clicked.connect(self._refresh)
         self.path_edit.returnPressed.connect(self._open_path)
@@ -476,17 +480,17 @@ class MainWindow(QMainWindow):
 
         self.remote_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabel("直连目录")
+        ui(self.tree.setHeaderLabel, tr("直连目录"))
         self.tree.itemExpanded.connect(self._expand_tree)
         self.tree.itemClicked.connect(self._tree_clicked)
         self.table = RemoteFileTable()
         self.table.localPathsDropped.connect(self._copy_local_to_remote)
         self.table.workerPathsDropped.connect(self._collect_workers_to_jump)
         self.table.preparedDragCancelled.connect(
-            lambda: self.status.setText("拖出文件已准备好；如果刚才松开了鼠标，请再拖一次。")
+            lambda: ui(self.status.setText, tr('拖出文件已准备好；如果刚才松开了鼠标，请再拖一次。'))
         )
         self.table.prepare_export = self._prepare_drag_export
-        self.table.setHorizontalHeaderLabels(["文件名", "文件大小", "文件类型", "最后修改"])
+        ui(self.table.setHorizontalHeaderLabels, [tr('文件名'), tr('文件大小'), tr('文件类型'), tr('最后修改')])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.cellDoubleClicked.connect(self._table_activated)
@@ -526,7 +530,7 @@ class MainWindow(QMainWindow):
         self.worker_browser.setVisible(self.show_workers_action.isChecked())
 
         self.batch_results = QTableWidget(0, 4)
-        self.batch_results.setHorizontalHeaderLabels(["节点", "操作", "结果", "详情"])
+        ui(self.batch_results.setHorizontalHeaderLabels, [tr('节点'), tr('操作'), tr('结果'), tr('详情')])
         self.batch_results.setShowGrid(False)
         self.batch_results.verticalHeader().hide()
         self.batch_results.verticalHeader().setMinimumSectionSize(18)
@@ -543,7 +547,7 @@ class MainWindow(QMainWindow):
         self.missingDestinationRequested.connect(self._show_missing_destination)
 
         self._install_file_actions()
-        self.completion_toast = QLabel(self)
+        self.completion_toast = ui(QLabel, self)
         self.completion_toast.setObjectName("completionToast")
         self.completion_toast.setWordWrap(True)
         self.completion_toast.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -758,7 +762,7 @@ class MainWindow(QMainWindow):
         try:
             root = self._tmux_root()
         except ValueError as exc:
-            QMessageBox.information(self, "持久终端", str(exc))
+            QMessageBox.information(self, tr('持久终端'), str(exc))
             return
         config, password = root.config, self._jump_password
         cancel = threading.Event()
@@ -821,13 +825,13 @@ class MainWindow(QMainWindow):
                     self._remember_tmux_task(config, route, task,
                                              " → ".join(route) or root_name)
             self._refresh_tmux_tasks(save=True)
-            self.tasks_workspace.summary.setText(f"扫描完成：{len(results) - len(failures)}/{len(results)} 个节点查询成功。")
-            self.tasks_workspace.summary.setToolTip("")
+            ui(self.tasks_workspace.summary.setText, tr('扫描完成：{0}/{1} 个节点查询成功。', f'{len(results) - len(failures)}', f'{len(results)}'))
+            ui(self.tasks_workspace.summary.setToolTip, "")
             if failures:
                 logging.getLogger(__name__).warning("tmux 节点查询失败：%s", "；".join(failures))
-                self.tasks_workspace.summary.setToolTip("\n".join(failures))
-        self.tasks_workspace.summary.setText("正在后台扫描持久终端，可继续其他操作…")
-        self._run(work, success, "正在后台扫描持久终端…", background_slot="_tmux_scan_job",
+                ui(self.tasks_workspace.summary.setToolTip, "\n".join(failures))
+        ui(self.tasks_workspace.summary.setText, tr('正在后台扫描持久终端，可继续其他操作…'))
+        self._run(work, success, tr('正在后台扫描持久终端…'), background_slot="_tmux_scan_job",
                   log_action="扫描 tmux 持久终端", log_category="terminal",
                   log_result=lambda value: ("部分完成" if any(row[2] for row in value) else "成功",
                                             "；".join(f"{' → '.join(route) or config.host}: {error}" for route, _, error in value if error)))
@@ -844,8 +848,8 @@ class MainWindow(QMainWindow):
         try:
             root = self._tmux_root(record)
             if record.get("attached", 0) > 0:
-                choice = QMessageBox.question(self, "会话已有客户端",
-                    "这个远程会话已有客户端连接，继续连接后输入会共享。\n是否继续？不会断开其他客户端。",
+                choice = QMessageBox.question(self, tr('会话已有客户端'),
+                    tr('这个远程会话已有客户端连接，继续连接后输入会共享。\n是否继续？不会断开其他客户端。'),
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
                 if choice != QMessageBox.StandardButton.Yes:
                     return
@@ -864,7 +868,7 @@ class MainWindow(QMainWindow):
             self.workspace_tabs.setCurrentWidget(self.terminal_workspace)
             self._connect_terminals([node_id], persistent=True, restore_tasks={node_id: record})
         except ValueError as exc:
-            QMessageBox.warning(self, "恢复持久终端", str(exc))
+            QMessageBox.warning(self, tr('恢复持久终端'), str(exc))
 
     def _detach_tmux_task(self, key):
         record = self._tmux_records.get(key)
@@ -903,11 +907,11 @@ class MainWindow(QMainWindow):
         try:
             targets = [(r, self._tmux_root(r), tuple(r["route"]), r["name"]) for r in records]
         except ValueError as exc:
-            QMessageBox.warning(self, "结束远程会话", str(exc))
+            QMessageBox.warning(self, tr('结束远程会话'), str(exc))
             return
         names = "\n".join(f"{r['node']} / {r['name']}" for r in records)
-        answer = QMessageBox.question(self, "结束远程 tmux 会话",
-            f"永久结束所选 {len(records)} 个远程会话？\n{names}\n这可能终止其中的程序，之后无法恢复。",
+        answer = QMessageBox.question(self, tr('结束远程 tmux 会话'),
+            tr('永久结束所选 {0} 个远程会话？\n{1}\n这可能终止其中的程序，之后无法恢复。', f'{len(records)}', f'{names}'),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
         if answer != QMessageBox.StandardButton.Yes:
             return
@@ -929,13 +933,13 @@ class MainWindow(QMainWindow):
                     self._forget_tmux_record(record["key"])
             self._refresh_tmux_tasks(save=True)
             if errors:
-                QMessageBox.warning(self, "部分会话未能结束", "\n".join(errors))
-        self._run(work, success, "正在结束远程 tmux 会话…", background_slot="_tmux_job",
+                QMessageBox.warning(self, tr('部分会话未能结束'), "\n".join(errors))
+        self._run(work, success, tr('正在结束远程 tmux 会话…'), background_slot="_tmux_job",
                   log_action=f"结束 tmux 会话（{len(records)} 个）", log_category="terminal",
                   log_result=lambda result: ("部分完成" if result[1] and result[0] else "失败" if result[1] else "成功",
                       f"{len(result[0])}/{len(records)} 个会话已结束" + ("；" + "；".join(result[1]) if result[1] else "")))
 
-    def _connect_terminals(self, node_ids: list[str], *, persistent=None, restore_tasks=None) -> None:
+    def _connect_terminals(self, node_ids: list[str], *, persistent=None, restore_tasks=None, recovery_group=None) -> None:
         if self._job is not None or not node_ids:
             return
         sources = self._terminal_sources()
@@ -1127,6 +1131,8 @@ class MainWindow(QMainWindow):
                      if node_id in channels and self.terminal_workspace.has_node(node_id)]
             link = (jump.config.host, jump.config.port, jump.config.username, remote_group) if persistent else None
             group_id = self._tmux_group_links.get(link) if link else None
+            if recovery_group in self.terminal_workspace._groups:
+                group_id = recovery_group
             if group_id not in self.terminal_workspace._groups:
                 group_id = self.terminal_workspace.create_group(ready) if ready else None
                 if persistent and group_id:
@@ -1172,6 +1178,8 @@ class MainWindow(QMainWindow):
                 size = self.terminal_workspace.terminal_size(session_id)
                 if size is not None:
                     self._terminal_manager.resize(session_id, *size)
+            if recovery_group and group_id and len(self.terminal_workspace._groups[group_id].members) > 1:
+                self.terminal_workspace.show_group_combined(group_id)
             if persistent:
                 for node_id, error in errors.items():
                     if node_id in restore_tasks:
@@ -1179,15 +1187,15 @@ class MainWindow(QMainWindow):
                 if group_id and len(self.terminal_workspace._groups[group_id].members) > 1:
                     self.terminal_workspace.show_group_combined(group_id)
                 self._refresh_tmux_tasks(save=True)
-            self.status.setText(
-                f"SSH Shell：连接 {len(channels)} 个，失败 {len(errors)} 个；Enter 可发送命令。"
+            ui(self.status.setText,
+                tr('SSH Shell：连接 {0} 个，失败 {1} 个；Enter 可发送命令。', f'{len(channels)}', f'{len(errors)}')
             )
             if errors:
                 lines = [f"{self.terminal_workspace.node_label(node_id)}: {message}"
                          for node_id, message in errors.items()]
                 omitted = f"\n另有 {len(lines) - 12} 个节点失败。" if len(lines) > 12 else ""
                 QMessageBox.warning(
-                    self, "终端连接结果",
+                    self, tr('终端连接结果'),
                     "以下节点连接失败：\n" + "\n".join(lines[:12]) + omitted,
                 )
 
@@ -1197,7 +1205,7 @@ class MainWindow(QMainWindow):
 
         labels = [self.terminal_workspace.node_label(node_id) for node_id in node_ids]
         self._run(
-            work, success, f"正在连接 {len(node_ids)} 个 SSH Shell…",
+            work, success, tr('正在连接 {0} 个 SSH Shell…', f'{len(node_ids)}'),
             on_finished=finished,
             log_action=f"SSH 终端连接（{compact_node_aliases(labels)}）",
             log_category="connection", log_context={"nodes": labels},
@@ -1219,19 +1227,17 @@ class MainWindow(QMainWindow):
         persistent = session_id in self._persistent_sessions
         self._terminal_manager.close(session_id)
         self.terminal_workspace.remove_terminal(session_id)
-        self.status.setText("持久终端已分离；远程会话保留，可在任务页检查和恢复。" if persistent else "终端连接已关闭。")
+        ui(self.status.setText, (tr('持久终端已分离；远程会话保留，可在任务页检查和恢复。') if persistent else tr('终端连接已关闭。')))
 
     def _terminal_close_choice(self, title: str, count: int) -> str:
         box = QMessageBox(self)
-        box.setWindowTitle(title)
+        ui(box.setWindowTitle, title)
         box.setIcon(QMessageBox.Icon.Warning)
-        box.setText(f"所选 {count} 个终端包含 tmux 持久会话，请选择处理方式。")
-        box.setInformativeText("永久结束会销毁远程 tmux 会话，可能终止其中的程序，之后无法恢复。\n"
-                               "分离连接会关闭本地连接，保留远程 tmux 会话，可在任务页恢复。\n"
-                               "若包含普通终端，其连接也会关闭，但不支持恢复。")
-        end = box.addButton("永久结束会话", QMessageBox.ButtonRole.DestructiveRole)
-        detach = box.addButton("分离连接", QMessageBox.ButtonRole.ActionRole)
-        cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+        ui(box.setText, tr('所选 {0} 个终端包含 tmux 持久会话，请选择处理方式。', f'{count}'))
+        ui(box.setInformativeText, tr('永久结束会销毁远程 tmux 会话，可能终止其中的程序，之后无法恢复。\n分离连接会关闭本地连接，保留远程 tmux 会话，可在任务页恢复。\n若包含普通终端，其连接也会关闭，但不支持恢复。'))
+        end = ui(box.addButton, tr('永久结束会话'), QMessageBox.ButtonRole.DestructiveRole)
+        detach = ui(box.addButton, tr('分离连接'), QMessageBox.ButtonRole.ActionRole)
+        cancel = ui(box.addButton, QMessageBox.StandardButton.Cancel)
         box.setDefaultButton(cancel)
         box.exec()
         return "end" if box.clickedButton() is end else "detach" if box.clickedButton() is detach else "cancel"
@@ -1240,7 +1246,7 @@ class MainWindow(QMainWindow):
         if session_id not in self._persistent_sessions:
             self._close_terminal(session_id)
             return
-        choice = self._terminal_close_choice("断开终端", 1)
+        choice = self._terminal_close_choice(tr("断开终端"), 1)
         if choice == "detach":
             self._close_terminal(session_id)
         elif choice == "end":
@@ -1249,7 +1255,7 @@ class MainWindow(QMainWindow):
     def _end_terminal_sessions(self, sessions: list[str]) -> None:
         # Resolve all routes before closing anything; failed kills retain their local views.
         if self._job is not None or self._tmux_job is not None:
-            QMessageBox.information(self, "结束终端", "请等待当前连接或会话查询完成后重试。")
+            QMessageBox.information(self, tr('结束终端'), tr('请等待当前连接或会话查询完成后重试。'))
             return
         targets = []
         ordinary = []
@@ -1262,7 +1268,7 @@ class MainWindow(QMainWindow):
                 record = self._tmux_records[key]
                 targets.append((sid, record, self._tmux_root(record), tuple(record["route"]), record["name"]))
         except (KeyError, ValueError) as exc:
-            QMessageBox.warning(self, "结束终端", str(exc))
+            QMessageBox.warning(self, tr('结束终端'), str(exc))
             return
         if not targets:
             for sid in ordinary:
@@ -1290,10 +1296,10 @@ class MainWindow(QMainWindow):
                     self._close_terminal(sid)
                     self._forget_tmux_record(record["key"])
             self._refresh_tmux_tasks(save=True)
-            self.status.setText(f"已永久结束 {len(ended)} 个 tmux 会话，关闭 {len(ordinary)} 个普通终端。")
+            ui(self.status.setText, tr('已永久结束 {0} 个 tmux 会话，关闭 {1} 个普通终端。', f'{len(ended)}', f'{len(ordinary)}'))
             if errors:
-                QMessageBox.warning(self, "部分终端未能结束", "失败的终端连接保留，可重试。\n" + "\n".join(errors))
-        self._run(work, success, "正在永久结束远程会话…", background_slot="_tmux_job",
+                QMessageBox.warning(self, tr('部分终端未能结束'), "失败的终端连接保留，可重试。\n" + "\n".join(errors))
+        self._run(work, success, tr('正在永久结束远程会话…'), background_slot="_tmux_job",
                   log_action=f"永久结束终端（{len(targets)} 个 tmux 会话）", log_category="terminal",
                   log_result=lambda result: ("部分完成" if result[1] and result[0] else "失败" if result[1] else "成功",
                       f"{len(result[0])}/{len(targets)} 个会话已结束" + ("；" + "；".join(result[1]) if result[1] else "")))
@@ -1304,7 +1310,7 @@ class MainWindow(QMainWindow):
             return
         name = self.terminal_workspace.group_name(group_id)
         if any(sid in self._persistent_sessions for sid in sessions):
-            choice = self._terminal_close_choice(f"断开终端组：{name}", len(sessions))
+            choice = self._terminal_close_choice(tr("断开终端组：{0}", name), len(sessions))
             if choice == "detach":
                 for sid in sessions:
                     self._close_terminal(sid)
@@ -1312,8 +1318,8 @@ class MainWindow(QMainWindow):
                 self._end_terminal_sessions(sessions)
             return
         choice = QMessageBox.question(
-            self, "断开终端组",
-            f"断开 {name} 的 {len(sessions)} 个终端连接？",
+            self, tr('断开终端组'),
+            tr('断开 {0} 的 {1} 个终端连接？', f'{name}', f'{len(sessions)}'),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )
@@ -1322,13 +1328,13 @@ class MainWindow(QMainWindow):
         for session_id in sessions:
             self._terminal_manager.close(session_id)
             self.terminal_workspace.remove_terminal(session_id)
-        self.status.setText(f"已断开 {name} 的 {len(sessions)} 个终端连接。")
+        ui(self.status.setText, tr('已断开 {0} 的 {1} 个终端连接。', f'{name}', f'{len(sessions)}'))
 
     def _send_terminal_input(self, session_id: str, data: bytes) -> None:
         try:
             self._terminal_manager.send(session_id, data)
         except ConnectionError as exc:
-            self.status.setText(str(exc))
+            ui(self.status.setText, str(exc))
 
     def _interrupt_broadcast(self, group_id: str, targets: dict[str, str]) -> None:
         workspace = self.terminal_workspace
@@ -1340,11 +1346,8 @@ class MainWindow(QMainWindow):
         labels = [workspace.node_label(node_id) for node_id in targets]
         group_name = workspace.group_name(group_id)
         answer = QMessageBox.question(
-            self, "确认广播中断",
-            f"向 {group_name} 中勾选的 {len(targets)} 个节点发送 Ctrl+C？\n"
-            f"目标：{compact_node_aliases(labels)}\n\n"
-            "这会请求中断各终端当前的前台程序，可能使正在进行的工作提前结束。"
-            "每个节点仅发送一次，程序是否停止取决于远端程序是否响应。",
+            self, tr('确认广播中断'),
+            tr('向 {0} 中勾选的 {1} 个节点发送 Ctrl+C？\n目标：{2}\n\n这会请求中断各终端当前的前台程序，可能使正在进行的工作提前结束。每个节点仅发送一次，程序是否停止取决于远端程序是否响应。', f'{group_name}', f'{len(targets)}', f'{compact_node_aliases(labels)}'),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -1353,7 +1356,7 @@ class MainWindow(QMainWindow):
         if (self._job is not None or self._broadcast_check is not None
                 or not workspace.valid_broadcast(group_id, targets)
                 or workspace.broadcast_targets() != targets):
-            QMessageBox.warning(self, "中断未发送", "终端组或目标状态已变化，请重新选择后再试。")
+            QMessageBox.warning(self, tr('中断未发送'), tr('终端组或目标状态已变化，请重新选择后再试。'))
             return
         sent, errors = [], []
         for node_id, session_id in targets.items():
@@ -1363,14 +1366,14 @@ class MainWindow(QMainWindow):
             except ConnectionError as exc:
                 errors.append(f"{workspace.node_label(node_id)}：{exc}")
         detail = f"Ctrl+C 已提交发送至 {len(sent)}/{len(targets)} 个终端；实际中断结果请查看终端输出。"
-        self.status.setText(detail)
+        ui(self.status.setText, detail)
         self._record_activity(
             "broadcast", f"广播中断（{group_name}）",
             "部分发送" if errors and sent else "发送失败" if errors else "已提交发送",
             detail, context={"targets": labels, "sent_nodes": sent, "errors": errors, "control": "Ctrl+C"},
         )
         if errors:
-            QMessageBox.warning(self, "中断发送失败", "\n".join(errors))
+            QMessageBox.warning(self, tr('中断发送失败'), "\n".join(errors))
         workspace.broadcast_input.setFocus()
 
     def _record_broadcast(self, state: PendingBroadcast, status: str,
@@ -1392,11 +1395,11 @@ class MainWindow(QMainWindow):
             return
         targets = dict(targets)
         if not self.terminal_workspace.valid_broadcast(group_id, targets):
-            QMessageBox.warning(self, "广播未发送", "终端组或目标已变化，请重新选择当前组的终端。")
+            QMessageBox.warning(self, tr('广播未发送'), tr('终端组或目标已变化，请重新选择当前组的终端。'))
             self._record_activity("broadcast", "终端广播", "未发送", "终端组或目标已变化")
             return
         if any(not self._terminal_manager.has_session(sid) for sid in targets.values()):
-            QMessageBox.warning(self, "广播未发送", "有目标终端已断开，请重新选择广播目标。")
+            QMessageBox.warning(self, tr('广播未发送'), tr('有目标终端已断开，请重新选择广播目标。'))
             self._record_activity("broadcast", "终端广播", "未发送", "有目标终端已断开")
             return
         state = PendingBroadcast(group_id, command, targets)
@@ -1487,7 +1490,7 @@ class MainWindow(QMainWindow):
             self.terminal_workspace.set_terminal_input_enabled(session_id, True)
         if (not self.terminal_workspace.valid_broadcast(state.group_id, state.targets)
                 or any(not self._terminal_manager.has_session(sid) for sid in state.targets.values())):
-            QMessageBox.warning(self, "广播未发送", "检查期间有目标终端断开。请重新选择后再试。")
+            QMessageBox.warning(self, tr('广播未发送'), tr('检查期间有目标终端断开。请重新选择后再试。'))
             self.terminal_workspace.set_broadcast_busy(False)
             self._record_broadcast(state, "未发送", "检查期间有目标终端断开")
             return
@@ -1496,28 +1499,28 @@ class MainWindow(QMainWindow):
         if not same_directory:
             details = [
                 f"{self.terminal_workspace.node_label(node_id)}："
-                f"{state.directories.get(sid) or '目录未知或终端不在可识别的 Shell 提示符'}"
+                f"{state.directories.get(sid) or tr('目录未知或终端不在可识别的 Shell 提示符')}"
                 for node_id, sid in state.targets.items()
             ]
             dialog = QMessageBox(self)
             dialog.setIcon(QMessageBox.Icon.Warning)
-            dialog.setWindowTitle("广播前确认")
-            dialog.setText("目标终端的工作目录不同或无法核实。仍向全部目标发送命令？")
-            dialog.setInformativeText("\n".join(details[:12]) +
-                                      (f"\n其余 {len(details) - 12} 个节点见详情。" if len(details) > 12 else ""))
+            ui(dialog.setWindowTitle, tr('广播前确认'))
+            ui(dialog.setText, tr('目标终端的工作目录不同或无法核实。仍向全部目标发送命令？'))
+            ui(dialog.setInformativeText, "\n".join(details[:12]) +
+                                      (tr("\n其余 {0} 个节点见详情。", len(details) - 12) if len(details) > 12 else ""))
             dialog.setDetailedText("\n".join(details))
-            send_button = dialog.addButton("仍然发送", QMessageBox.ButtonRole.AcceptRole)
-            cancel_button = dialog.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+            send_button = ui(dialog.addButton, tr('仍然发送'), QMessageBox.ButtonRole.AcceptRole)
+            cancel_button = ui(dialog.addButton, tr('取消'), QMessageBox.ButtonRole.RejectRole)
             dialog.setDefaultButton(cancel_button)
             dialog.exec()
             if dialog.clickedButton() is not send_button:
-                self.status.setText("广播已取消；命令保留在广播输入框中。")
+                ui(self.status.setText, tr('广播已取消；命令保留在广播输入框中。'))
                 self.terminal_workspace.set_broadcast_busy(False)
                 self._record_broadcast(state, "取消", "工作目录不同或无法核实")
                 return
 
         if not self.terminal_workspace.valid_broadcast(state.group_id, state.targets):
-            self.status.setText("广播未发送：终端组或目标已变化。")
+            ui(self.status.setText, tr('广播未发送：终端组或目标已变化。'))
             self.terminal_workspace.set_broadcast_busy(False)
             self._record_broadcast(state, "未发送", "终端组或目标已变化")
             return
@@ -1529,28 +1532,28 @@ class MainWindow(QMainWindow):
             details = [
                 f"{self.terminal_workspace.node_label(node_id)}："
                 + (" ".join(f"({name})" for name in state.conda_prefixes[sid])
-                   if state.conda_prefixes[sid] else "无 Conda 前缀")
+                   if state.conda_prefixes[sid] else tr("未激活 Conda 环境"))
                 for node_id, sid in state.targets.items()
             ]
             dialog = QMessageBox(self)
             dialog.setIcon(QMessageBox.Icon.Warning)
-            dialog.setWindowTitle("广播前确认 Conda 环境")
-            dialog.setText("目标终端显示的 Conda 环境前缀不同。是否继续广播？")
-            dialog.setInformativeText("\n".join(details[:12]) +
-                                      (f"\n其余 {len(details) - 12} 个节点见详情。"
+            ui(dialog.setWindowTitle, tr('广播前确认 Conda 环境'))
+            ui(dialog.setText, tr('目标终端显示的 Conda 环境前缀不同。是否继续广播？'))
+            ui(dialog.setInformativeText, "\n".join(details[:12]) +
+                                      (tr("\n其余 {0} 个节点见详情。", len(details) - 12)
                                        if len(details) > 12 else ""))
             dialog.setDetailedText("\n".join(details))
-            cancel_button = dialog.addButton("不发送", QMessageBox.ButtonRole.RejectRole)
-            send_button = dialog.addButton("此次仍要发送", QMessageBox.ButtonRole.AcceptRole)
-            ignore_button = dialog.addButton(
-                "该终端组不再提示", QMessageBox.ButtonRole.AcceptRole
+            cancel_button = ui(dialog.addButton, tr('不发送'), QMessageBox.ButtonRole.RejectRole)
+            send_button = ui(dialog.addButton, tr('此次仍要发送'), QMessageBox.ButtonRole.AcceptRole)
+            ignore_button = ui(dialog.addButton,
+                tr('该终端组不再提示'), QMessageBox.ButtonRole.AcceptRole
             )
             dialog.setDefaultButton(cancel_button)
             dialog.exec()
             if dialog.clickedButton() is ignore_button:
                 self.terminal_workspace.ignore_conda_mismatch(state.group_id)
             elif dialog.clickedButton() is not send_button:
-                self.status.setText("广播已取消：Conda 环境前缀不同；命令保留在输入框中。")
+                ui(self.status.setText, tr('广播已取消：Conda 环境前缀不同；命令保留在输入框中。'))
                 self.terminal_workspace.set_broadcast_busy(False)
                 self._record_broadcast(state, "取消", "Conda 环境前缀不同")
                 return
@@ -1558,19 +1561,18 @@ class MainWindow(QMainWindow):
         if DESTRUCTIVE_SHELL_COMMAND.search(state.command):
             group_name = self.terminal_workspace.group_name(state.group_id)
             response = QMessageBox.warning(
-                self, "确认高风险广播",
-                f"{group_name} 将向 {len(state.targets)} 个终端广播可能修改或删除数据的命令。\n"
-                "请核对组和目标后决定是否继续。",
+                self, tr('确认高风险广播'),
+                tr('{0} 将向 {1} 个终端广播可能修改或删除数据的命令。\n请核对组和目标后决定是否继续。', f'{group_name}', f'{len(state.targets)}'),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
                 QMessageBox.StandardButton.Cancel,
             )
             if response != QMessageBox.StandardButton.Yes:
-                self.status.setText("高风险广播已取消；命令保留在输入框中。")
+                ui(self.status.setText, tr('高风险广播已取消；命令保留在输入框中。'))
                 self.terminal_workspace.set_broadcast_busy(False)
                 self._record_broadcast(state, "取消", "高风险命令确认未通过")
                 return
             if not self.terminal_workspace.valid_broadcast(state.group_id, state.targets):
-                self.status.setText("广播未发送：终端组或目标已变化。")
+                ui(self.status.setText, tr('广播未发送：终端组或目标已变化。'))
                 self.terminal_workspace.set_broadcast_busy(False)
                 self._record_broadcast(state, "未发送", "终端组或目标已变化")
                 return
@@ -1590,9 +1592,8 @@ class MainWindow(QMainWindow):
                 errors.append(f"{self.terminal_workspace.node_label(node_id)}：{exc}")
         if sent:
             self.terminal_workspace.broadcast_input.clear()
-        self.status.setText(
-            f"{self.terminal_workspace.group_name(state.group_id)}：命令已发送至 "
-            f"{sent}/{len(state.targets)} 个终端；可在联合显示或各终端查看输出。"
+        ui(self.status.setText,
+            tr('{0}：命令已发送至 {1}/{2} 个终端；可在联合显示或各终端查看输出。', f'{self.terminal_workspace.group_name(state.group_id)}', f'{sent}', f'{len(state.targets)}')
         )
         self.terminal_workspace.set_broadcast_busy(False)
         if sent:
@@ -1603,7 +1604,7 @@ class MainWindow(QMainWindow):
             sent_nodes=sent_nodes, errors=errors,
         )
         if errors:
-            QMessageBox.warning(self, "广播发送失败", "\n".join(errors))
+            QMessageBox.warning(self, tr('广播发送失败'), "\n".join(errors))
 
     def _resize_terminal(self, session_id: str, columns: int, rows: int) -> None:
         self._terminal_manager.resize(session_id, columns, rows)
@@ -1615,14 +1616,14 @@ class MainWindow(QMainWindow):
             state.buffers.pop(_session_id, None)
             if not state.pending:
                 QTimer.singleShot(0, self._finish_broadcast_check)
-        self.status.setText(f"终端输入失败：{error}")
+        ui(self.status.setText, tr('终端输入失败：{0}', f'{error}'))
         self._record_activity("terminal", "SSH 终端输入", "发送失败", error)
 
     def _close_terminals(self, node_ids: list[str]) -> None:
         sessions = [sid for sid, record in self.terminal_workspace._sessions.items()
                     if record.node_id in node_ids]
         if any(sid in self._persistent_sessions for sid in sessions):
-            choice = self._terminal_close_choice("断开勾选节点终端", len(sessions))
+            choice = self._terminal_close_choice(tr("断开勾选节点终端"), len(sessions))
             if choice == "detach":
                 for sid in sessions:
                     self._close_terminal(sid)
@@ -1630,7 +1631,7 @@ class MainWindow(QMainWindow):
                 self._end_terminal_sessions(sessions)
             return
         closed = self._terminal_manager.close_nodes(node_ids)
-        self.status.setText(f"已关闭 {closed} 个终端连接。")
+        ui(self.status.setText, tr('已关闭 {0} 个终端连接。', f'{closed}'))
 
     def _terminal_closed(self, session_id: str, unexpected: bool) -> None:
         task_key = self._persistent_sessions.pop(session_id, None)
@@ -1655,8 +1656,7 @@ class MainWindow(QMainWindow):
         self._probe_prompt_pending.pop(session_id, None)
         if unexpected:
             self.terminal_workspace.mark_terminal_closed(session_id)
-            self.status.setText("持久终端连接已断开；请在任务页检查和恢复远程会话。" if record is not None
-                                else "SSH Shell 已关闭；终端输出仍可查看。")
+            ui(self.status.setText, (tr('持久终端连接已断开；请在任务页检查和恢复远程会话。') if record is not None else tr('SSH Shell 已关闭；终端输出仍可查看。')))
         else:
             self.terminal_workspace.remove_terminal(session_id)
 
@@ -1776,13 +1776,13 @@ class MainWindow(QMainWindow):
         try:
             path = self._activity_log.ensure_file()
         except OSError as exc:
-            QMessageBox.warning(self, "打开日志文件", f"无法创建日志文件：{exc}")
+            QMessageBox.warning(self, tr('打开日志文件'), tr('无法创建日志文件：{0}', f'{exc}'))
             return
         if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
-            QMessageBox.warning(self, "打开日志文件", f"无法打开日志文件：{path}")
+            QMessageBox.warning(self, tr('打开日志文件'), tr('无法打开日志文件：{0}', f'{path}'))
 
     def _show_about(self) -> None:
-        QMessageBox.about(self, "关于 NodeBridge", "NodeBridge — SSH/SFTP 文件管理器")
+        QMessageBox.about(self, tr("关于 NodeBridge"), tr("NodeBridge — SSH/SFTP 文件管理器"))
 
     def _show_user_guide(self) -> None:
         if self._help_dialog is None:
@@ -1790,10 +1790,10 @@ class MainWindow(QMainWindow):
             try:
                 guide = path.read_text(encoding="utf-8")
             except OSError as exc:
-                QMessageBox.warning(self, "使用指南", f"无法读取使用指南：{exc}")
+                QMessageBox.warning(self, tr('使用指南'), tr('无法读取使用指南：{0}', f'{exc}'))
                 return
             dialog = QDialog(self)
-            dialog.setWindowTitle("NodeBridge 使用指南")
+            ui(dialog.setWindowTitle, tr('NodeBridge 使用指南'))
             dialog.resize(860, 650)
             layout = QVBoxLayout(dialog)
             browser = QTextBrowser(dialog)
@@ -1801,7 +1801,7 @@ class MainWindow(QMainWindow):
             browser.setMarkdown(guide)
             browser.setOpenExternalLinks(True)
             layout.addWidget(browser)
-            close_button = QPushButton("关闭", dialog)
+            close_button = ui(QPushButton, tr('关闭'), dialog)
             close_button.clicked.connect(dialog.close)
             layout.addWidget(close_button)
             self._help_dialog = dialog
@@ -1820,7 +1820,15 @@ class MainWindow(QMainWindow):
                 or self._remote_browse_job is not None or self._worker_browse_job is not None
                 or self._worker_connect_job is not None)
 
+    def refresh_language(self) -> None:
+        """Repaint translated model data without replacing live views or connections."""
+        self.local.file_model.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, 3)
+        self.local.table.viewport().update()
+        self.terminal_workspace.refresh_language()
+
     def _update_controls(self) -> None:
+        if getattr(self, "_recovery", None) is not None:
+            self._recovery.checkpoint()
         busy = self._job is not None
         copying = self._remote_files_active()
         connecting_workers = self._worker_connect_job is not None
@@ -1828,7 +1836,7 @@ class MainWindow(QMainWindow):
         self.connect_button.setEnabled(not busy and not copying and not connected)
         self.jump_button.setEnabled(not busy and not copying and connected)
         self.disconnect_button.setEnabled(not busy and not copying and connected)
-        self.disconnect_button.setText("返回上一站点" if self._parents else "断开")
+        ui(self.disconnect_button.setText, (tr('返回上一站点') if self._parents else tr('断开')))
         self.site_button.setEnabled(not busy and not copying)
         for widget in (self.host, self.port, self.user, self.key_file, self.password):
             widget.setEnabled(not busy and not connected)
@@ -1868,7 +1876,7 @@ class MainWindow(QMainWindow):
             except LockedSiteStore:
                 while True:
                     password, accepted = QInputDialog.getText(
-                        self, "启动连接：解锁站点密码", "请输入 NodeBridge 主密码：",
+                        self, tr('启动连接：解锁站点密码'), tr('请输入 NodeBridge 主密码：'),
                         QLineEdit.EchoMode.Password,
                     )
                     if not accepted:
@@ -1878,7 +1886,7 @@ class MainWindow(QMainWindow):
                         sites = self._site_store.load()
                         break
                     except ValueError as exc:
-                        QMessageBox.warning(self, "解锁失败", str(exc))
+                        QMessageBox.warning(self, tr('解锁失败'), str(exc))
             selected = [site for site in sites if site.auto_connect]
             if len(selected) != 1:
                 raise ValueError("请在站点管理器中仅选择一个自动连接站点。")
@@ -1888,7 +1896,7 @@ class MainWindow(QMainWindow):
             password = site.password or None
             if self._site_store.mode == "none" and not password and not site.key_file:
                 password, accepted = QInputDialog.getText(
-                    self, "启动连接：站点密码", f"请输入“{site.name}”的连接密码（免密可留空）：",
+                    self, tr('启动连接：站点密码'), tr('请输入“{0}”的连接密码（免密可留空）：', f'{site.name}'),
                     QLineEdit.EchoMode.Password,
                 )
                 if not accepted:
@@ -1897,7 +1905,7 @@ class MainWindow(QMainWindow):
                 NodeConfig(site.host, site.port, site.username, site.key_file or None, site.discovery), password or None, None,
             )
         except (OSError, ValueError, KeyError, TypeError) as exc:
-            QMessageBox.warning(self, "启动连接", f"无法自动连接站点：{exc}")
+            QMessageBox.warning(self, tr('启动连接'), tr('无法自动连接站点：{0}', f'{exc}'))
 
     def _open_site_manager(self) -> None:
         try:
@@ -1907,7 +1915,7 @@ class MainWindow(QMainWindow):
                 connect_available=self._session is None or getattr(self._session, "_client", None) is not None,
             )
         except (OSError, ValueError, KeyError, TypeError) as exc:
-            QMessageBox.warning(self, "站点管理器", f"无法读取站点资料：{exc}")
+            QMessageBox.warning(self, tr('站点管理器'), tr('无法读取站点资料：{0}', f'{exc}'))
             return
         if dialog.exec() != SiteManagerDialog.DialogCode.Accepted:
             return
@@ -1915,7 +1923,7 @@ class MainWindow(QMainWindow):
         if site is None:
             return
         if self._session is not None and getattr(self._session, "_client", None) is None:
-            QMessageBox.warning(self, "NodeBridge", "当前站点通过 SSH 别名连接；请用“SSH 别名中转”继续跳转。")
+            QMessageBox.warning(self, "NodeBridge", tr('当前站点通过 SSH 别名连接；请用“SSH 别名中转”继续跳转。'))
             return
         config = NodeConfig(site.host, site.port, site.username, site.key_file or None, site.discovery)
         self._start_connection(config, dialog.connection_password, self._session)
@@ -1924,7 +1932,7 @@ class MainWindow(QMainWindow):
         if self._session is None:
             return
         alias, accepted = QInputDialog.getText(
-            self, "SSH 别名中转", "目标节点别名（例如 cft02）："
+            self, tr('SSH 别名中转'), tr('目标节点别名（例如 cft02）：')
         )
         if accepted and alias.strip():
             self._start_alias_connection(alias.strip())
@@ -1948,14 +1956,14 @@ class MainWindow(QMainWindow):
             self._parents.append((jump, self._current_listing))
             self._session, listing = result
             self._sync_terminal_nodes()
-            self.jump_title.setText(f"当前站点 · {alias}")
+            ui(self.jump_title.setText, tr('当前站点 · {0}', f'{alias}'))
             self._show_connection_fields(self._session.config)
             self.tree.clear()
             self._show_listing(listing)
-            self.status.setText(f"已通过 {jump.config.host} 的 SSH 别名连接到 {alias}，当前目录：{listing.path}")
+            ui(self.status.setText, tr('已通过 {0} 的 SSH 别名连接到 {1}，当前目录：{2}', f'{jump.config.host}', f'{alias}', f'{listing.path}'))
 
         self._run(
-            work, success, f"正在通过当前站点连接 SSH 别名 {alias}…",
+            work, success, tr('正在通过当前站点连接 SSH 别名 {0}…', f'{alias}'),
             log_action=f"SSH 连接（{jump.config.host} → {alias}）",
             log_category="connection", log_context={"node": alias, "via": jump.config.host},
         )
@@ -1964,18 +1972,18 @@ class MainWindow(QMainWindow):
         jump = self._session
         if jump is None:
             if manual:
-                QMessageBox.information(self, "发现间接节点", "请先连接直连节点。")
+                QMessageBox.information(self, tr('发现间接节点'), tr('请先连接直连节点。'))
             return
         if self._parents:
             if manual:
-                QMessageBox.information(self, "发现间接节点", "请先返回直连节点，再发现间接节点。")
+                QMessageBox.information(self, tr('发现间接节点'), tr('请先返回直连节点，再发现间接节点。'))
             return
         if self._job is not None:
             if manual:
-                self.status.setText("请等待当前任务结束后再发现节点。")
+                ui(self.status.setText, tr('请等待当前任务结束后再发现节点。'))
             return
 
-        self.worker_browser.summary.setText("正在按当前站点的发现设置读取远程节点名单…")
+        ui(self.worker_browser.summary.setText, tr('正在按当前站点的发现设置读取远程节点名单…'))
 
         def success(result: NodeDiscovery) -> None:
             if result.hostname:
@@ -1994,12 +2002,12 @@ class MainWindow(QMainWindow):
                     f"在 {jump.config.host} 未找到可列出的 SSH 别名或编号主机名。"
                     "可用“添加别名…”手动连接，并检查直连节点的主机名及名称解析。"
                 )
-                self.worker_browser.summary.setText(message)
-            self.status.setText(message)
+                ui(self.worker_browser.summary.setText, message)
+            ui(self.status.setText, message)
             if manual:
-                QMessageBox.information(self, "发现间接节点", message)
+                QMessageBox.information(self, tr('发现间接节点'), message)
 
-        self._run(jump.discover_work_nodes, success, "正在发现直连节点可解析的工作主机…")
+        self._run(jump.discover_work_nodes, success, tr('正在发现直连节点可解析的工作主机…'))
 
     def _show_node_probe_result(self, result) -> None:
         generation, jump, cancel, revision, alias, status = result
@@ -2054,9 +2062,8 @@ class MainWindow(QMainWindow):
                     or self._parents or cancel.is_set()):
                 return
             reachable = sum(state == "reachable" for state, _ in statuses.values())
-            self.status.setText(
-                f"SSH 检测完成：{reachable}/{len(statuses)} 个候选节点可连接。"
-                " 灰色节点仍可勾选并重新尝试连接。"
+            ui(self.status.setText,
+                tr('SSH 检测完成：{0}/{1} 个候选节点可连接。 灰色节点仍可勾选并重新尝试连接。', f'{reachable}', f'{len(statuses)}')
             )
 
         job = JobThread(work, self)
@@ -2068,7 +2075,7 @@ class MainWindow(QMainWindow):
             self._set_node_probe_statuses({
                 alias: ("error", message) for alias in aliases
             }, observed_revision)
-            self.status.setText(f"SSH 后台探测失败：{message}")
+            ui(self.status.setText, tr('SSH 后台探测失败：{0}', f'{message}'))
             logging.getLogger("nodebridge.probe").warning(
                 "SSH 节点后台探测失败：%s", self._redact_log_value(message),
             )
@@ -2088,12 +2095,12 @@ class MainWindow(QMainWindow):
     def _add_worker_alias(self) -> None:
         if (self._session is None or self._parents or self._file_busy("workers")):
             return
-        alias, accepted = QInputDialog.getText(self, "添加间接节点", "直连节点上的 SSH 别名：")
+        alias, accepted = QInputDialog.getText(self, tr('添加间接节点'), tr('直连节点上的 SSH 别名：'))
         alias = alias.strip()
         if not accepted or not alias:
             return
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._@-]*", alias):
-            QMessageBox.warning(self, "间接节点", "别名只能包含字母、数字、点、下划线、@ 和连字符。")
+            QMessageBox.warning(self, tr('间接节点'), tr('别名只能包含字母、数字、点、下划线、@ 和连字符。'))
             return
         self.worker_browser.set_aliases([alias])
         self._sync_terminal_nodes()
@@ -2114,7 +2121,7 @@ class MainWindow(QMainWindow):
         aliases = [alias for alias in self.worker_browser.target_aliases() if alias not in self._workers]
         self.worker_browser._check_all(False)
         if not aliases:
-            self.status.setText("请勾选尚未连接的间接节点，或通过“添加别名…”输入节点。")
+            ui(self.status.setText, tr('请勾选尚未连接的间接节点，或通过“添加别名…”输入节点。'))
             return
         self._cancel_auto_hash()
         path = self.worker_browser.path_edit.text().strip()
@@ -2191,13 +2198,13 @@ class MainWindow(QMainWindow):
                 self._set_node_probe_statuses({alias: ("error", message)}, connection_revision)
             self._sync_terminal_nodes()
             self._schedule_auto_hash()
-            self.status.setText(f"间接节点：新连接 {len(results)} 个，失败 {len(errors)} 个。")
+            ui(self.status.setText, tr('间接节点：新连接 {0} 个，失败 {1} 个。', f'{len(results)}', f'{len(errors)}'))
             if errors:
                 lines = [f"{alias}: {message}" for alias, message in list(errors.items())[:8]]
-                QMessageBox.warning(self, "间接节点连接结果", "以下节点连接失败：\n" + "\n".join(lines))
+                QMessageBox.warning(self, tr('间接节点连接结果'), "以下节点连接失败：\n" + "\n".join(lines))
 
         self._run(
-            work, success, f"正在经 {jump.config.host} 连接 {len(aliases)} 个间接节点…",
+            work, success, tr('正在经 {0} 连接 {1} 个间接节点…', f'{jump.config.host}', f'{len(aliases)}'),
             log_action=f"SFTP 并行连接（{compact_node_aliases(aliases)}）",
             background_slot="_worker_connect_job",
             log_category="connection", log_context={"nodes": aliases, "via": jump.config.host},
@@ -2236,10 +2243,10 @@ class MainWindow(QMainWindow):
                 self.worker_browser.set_connection(alias, None)
             self._sync_terminal_nodes()
             self._schedule_auto_hash()
-            self.status.setText(f"已断开 {len(aliases)} 个间接节点；关闭错误 {len(errors)} 个。")
+            ui(self.status.setText, tr('已断开 {0} 个间接节点；关闭错误 {1} 个。', f'{len(aliases)}', f'{len(errors)}'))
 
         self._run(
-            work, success, f"正在断开 {len(aliases)} 个间接节点…",
+            work, success, tr('正在断开 {0} 个间接节点…', f'{len(aliases)}'),
             background_slot="_worker_connect_job",
             log_action=f"SFTP 并行断开（{compact_node_aliases(aliases)}）",
             log_category="connection", log_context={"nodes": aliases},
@@ -2261,7 +2268,7 @@ class MainWindow(QMainWindow):
                 self._pending_worker_refresh = (path, parent_fallback)
             return
         if not path.startswith("/"):
-            self.status.setText("间接节点路径必须是绝对路径。")
+            ui(self.status.setText, tr('间接节点路径必须是绝对路径。'))
             return
         if self.worker_browser.mode.currentIndex() == 1:
             alias = self.worker_browser.focused_alias
@@ -2269,7 +2276,7 @@ class MainWindow(QMainWindow):
         else:
             names = sorted(self._workers)
         if not names:
-            self.status.setText("请先连接间接节点。")
+            ui(self.status.setText, tr('请先连接间接节点。'))
             return
         sessions = {name: self._workers[name] for name in names}
         requested_view = (self.worker_browser.mode.currentIndex(), self.worker_browser.focused_alias)
@@ -2304,15 +2311,15 @@ class MainWindow(QMainWindow):
             current_view = (self.worker_browser.mode.currentIndex(), self.worker_browser.focused_alias)
             if current_view == requested_view and self._pending_worker_refresh is None:
                 shown_path = results[names[0]].path if requested_view[0] == 1 and results else path
-                self.worker_browser.path_edit.setText(shown_path)
+                ui(self.worker_browser.path_edit.setText, shown_path)
             self.worker_browser.set_listings(results, list(errors))
             self._schedule_auto_hash()
-            self.status.setText(f"间接节点目录：已读取 {len(results)} 个，失败 {len(errors)} 个。")
+            ui(self.status.setText, tr('间接节点目录：已读取 {0} 个，失败 {1} 个。', f'{len(results)}', f'{len(errors)}'))
             if errors:
                 lines = [f"{alias}: {message}" for alias, message in list(errors.items())[:8]]
                 self._show_background_error("以下节点读取失败：\n" + "\n".join(lines))
 
-        self._run(work, success, f"正在读取 {len(names)} 个间接节点的 {path}…",
+        self._run(work, success, tr('正在读取 {0} 个间接节点的 {1}…', f'{len(names)}', f'{path}'),
                   self._finish_worker_browse, background_slot="_worker_browse_job")
 
     def _finish_worker_browse(self) -> None:
@@ -2407,8 +2414,8 @@ class MainWindow(QMainWindow):
             while len(self._hash_cache) > 2048:
                 self._hash_cache.pop(next(iter(self._hash_cache)))
             differences = sum(result["result"] != "same" for result in results)
-            self.status.setText(
-                f"后台 SHA-256 校验完成：{len(results)} 个文件，{differences} 项差异或错误。"
+            ui(self.status.setText,
+                tr('后台 SHA-256 校验完成：{0} 个文件，{1} 项差异或错误。', f'{len(results)}', f'{differences}')
             )
             errors = [
                 f"{entry['name']}@{alias}: {node['detail']}"
@@ -2425,7 +2432,7 @@ class MainWindow(QMainWindow):
             if generation != self._hash_generation or cancel.is_set():
                 return
             self.worker_browser.set_hash_pending(path, names, "校验失败")
-            self.status.setText(f"后台 SHA-256 校验失败：{message}")
+            ui(self.status.setText, tr('后台 SHA-256 校验失败：{0}', f'{message}'))
             logging.getLogger("nodebridge.verification").warning(
                 "后台 SHA-256 校验失败：%s", self._redact_log_value(message),
             )
@@ -2442,7 +2449,7 @@ class MainWindow(QMainWindow):
     def _auto_check_progress(self, value: object) -> None:
         generation, done, total, path = value
         if generation == self._hash_generation and self._hash_job is not None:
-            self.status.setText(f"后台 SHA-256 校验 {path}：已检查 {done}/{total} 个节点…")
+            ui(self.status.setText, tr('后台 SHA-256 校验 {0}：已检查 {1}/{2} 个节点…', f'{path}', f'{done}', f'{total}'))
 
     def _hash_finished(self, job: JobThread) -> None:
         if self._hash_job is job:
@@ -2452,21 +2459,22 @@ class MainWindow(QMainWindow):
         self._finish_background_close()
 
     def _choose_worker_scope(self, verb: str) -> list[str]:
+        verb = tr(verb)
         connected = sorted(self._workers, key=str.casefold)
         current = self.worker_browser.focused_alias
         if current not in self._workers:
             current = connected[0] if connected else None
         if current is None:
-            QMessageBox.warning(self, "间接节点", "请先连接并选中一个间接节点。")
+            QMessageBox.warning(self, tr('间接节点'), tr('请先连接并选中一个间接节点。'))
             return []
         if len(connected) < 2:
             return [current]
         dialog = QMessageBox(self)
-        dialog.setWindowTitle(f"{verb}范围")
-        dialog.setText(f"要在当前节点 {current} 上{verb}，还是在已连接的 {len(connected)} 个节点上并行{verb}？")
-        single = dialog.addButton(f"仅 {current}", QMessageBox.ButtonRole.AcceptRole)
-        multiple = dialog.addButton(f"已连接的 {len(connected)} 个节点", QMessageBox.ButtonRole.ActionRole)
-        dialog.addButton(QMessageBox.StandardButton.Cancel)
+        ui(dialog.setWindowTitle, tr('{0}范围', f'{verb}'))
+        ui(dialog.setText, tr('要在当前节点 {0} 上{1}，还是在已连接的 {2} 个节点上并行{3}？', f'{current}', f'{verb}', f'{len(connected)}', f'{verb}'))
+        single = ui(dialog.addButton, tr('仅 {0}', f'{current}'), QMessageBox.ButtonRole.AcceptRole)
+        multiple = ui(dialog.addButton, tr('已连接的 {0} 个节点', f'{len(connected)}'), QMessageBox.ButtonRole.ActionRole)
+        ui(dialog.addButton, QMessageBox.StandardButton.Cancel)
         dialog.exec()
         if dialog.clickedButton() is single:
             return [current]
@@ -2484,7 +2492,7 @@ class MainWindow(QMainWindow):
 
     def _drop_jump_on_workers(self, token: str, paths: list[str], destination: str) -> None:
         if self._session is None or token != str(id(self._session)):
-            QMessageBox.warning(self, "复制文件", "拖动来源不是当前直连节点。")
+            QMessageBox.warning(self, tr('复制文件'), tr('拖动来源不是当前直连节点。'))
             return
         aliases = self._choose_worker_scope("复制")
         if aliases:
@@ -2544,13 +2552,13 @@ class MainWindow(QMainWindow):
             return
         parents = {posixpath.dirname(path.rstrip("/")) for path in paths}
         if len(parents) != 1 or not next(iter(parents)).startswith("/"):
-            QMessageBox.warning(self, "汇集文件", "请从同一个间接节点目录选择文件或文件夹。")
+            QMessageBox.warning(self, tr('汇集文件'), tr('请从同一个间接节点目录选择文件或文件夹。'))
             return
         if to_jump and not destination.startswith("/"):
-            QMessageBox.warning(self, "汇集文件", "跳板目标必须是绝对路径。")
+            QMessageBox.warning(self, tr('汇集文件'), tr('跳板目标必须是绝对路径。'))
             return
         if not to_jump and not Path(destination).is_dir():
-            QMessageBox.warning(self, "汇集文件", "本地目标目录不存在。")
+            QMessageBox.warning(self, tr('汇集文件'), tr('本地目标目录不存在。'))
             return
         aliases = self._choose_worker_scope("汇集复制")
         if not aliases:
@@ -2608,10 +2616,10 @@ class MainWindow(QMainWindow):
             elif not to_jump:
                 self.local.refresh()
             complete = sum(result.complete for result in results)
-            self._notify_done(f"汇集完成：{complete}/{len(results)} 个节点成功；详情见下方结果表。")
+            self._notify_done(tr('汇集完成：{0}/{1} 个节点成功；详情见下方结果表。', f'{complete}', f'{len(results)}'))
 
         self._run(
-            work, success, f"正在从 {len(aliases)} 个间接节点汇集文件…",
+            work, success, tr('正在从 {0} 个间接节点汇集文件…', f'{len(aliases)}'),
             log_action=f"并行汇集（{compact_node_aliases(aliases)}）：{self._log_paths(paths)} → {destination}；顶层名称加节点后缀",
             log_result=self._batch_log_result,
             log_context={"sources": paths, "destination": destination, "nodes": aliases},
@@ -2636,15 +2644,15 @@ class MainWindow(QMainWindow):
             return
         parent = self.worker_browser.rendered_path
         if not parent.startswith("/"):
-            QMessageBox.warning(self, "新建目录", "请先打开间接节点上的绝对目录。")
+            QMessageBox.warning(self, tr('新建目录'), tr('请先打开间接节点上的绝对目录。'))
             return
-        name, accepted = QInputDialog.getText(self, "新建目录", "目录名称：")
+        name, accepted = QInputDialog.getText(self, tr('新建目录'), tr('目录名称：'))
         if not accepted:
             return
         try:
             name = validate_remote_name(name)
         except ValueError as exc:
-            QMessageBox.warning(self, "新建目录", str(exc))
+            QMessageBox.warning(self, tr('新建目录'), str(exc))
             return
         aliases = self._choose_worker_scope("新建目录")
         if not aliases:
@@ -2721,7 +2729,7 @@ class MainWindow(QMainWindow):
 
         def success(outcome: WorkerDirectoryOutcome) -> None:
             if outcome.cancelled:
-                self.status.setText("新建目录已取消；没有创建任何目录。")
+                ui(self.status.setText, tr('新建目录已取消；没有创建任何目录。'))
                 return
             if (outcome.listings and self.worker_browser.rendered_path == parent
                     and self._worker_browse_job is None):
@@ -2733,12 +2741,12 @@ class MainWindow(QMainWindow):
                 state = "失败" if result.error else "已创建" if result.created else "已跳过"
                 detail = result.error or result.path
                 for column, value in enumerate((result.alias, "新建目录", state, detail)):
-                    self.batch_results.setItem(row, column, QTableWidgetItem(value))
+                    self.batch_results.setItem(row, column, ui(QTableWidgetItem, value))
             created = sum(result.created for result in outcome.results)
             skipped = sum(not result.created and not result.error for result in outcome.results)
             failed = sum(bool(result.error) for result in outcome.results)
             self._notify_done(
-                f"新建目录完成：{created} 个节点已创建，{skipped} 个跳过，{failed} 个失败；详情见下方结果表。"
+                tr('新建目录完成：{0} 个节点已创建，{1} 个跳过，{2} 个失败；详情见下方结果表。', f'{created}', f'{skipped}', f'{failed}')
             )
 
         def log_result(outcome: WorkerDirectoryOutcome) -> tuple[str, str]:
@@ -2758,7 +2766,7 @@ class MainWindow(QMainWindow):
             return "失败" if failures else "部分完成" if skipped else "成功", detail
 
         self._run(
-            work, success, f"正在 {len(aliases)} 个间接节点上新建目录…",
+            work, success, tr('正在 {0} 个间接节点上新建目录…', f'{len(aliases)}'),
             log_action=f"{'并行' if len(aliases) > 1 else ''}新建目录（{compact_node_aliases(aliases)}）：{target}",
             log_result=log_result,
             log_context={"destination": target, "nodes": aliases},
@@ -2817,37 +2825,36 @@ class MainWindow(QMainWindow):
             return
         uses_workers = mode.endswith("to_workers") or mode.startswith("worker_") or mode == "delete_workers"
         if uses_workers and (not aliases or any(alias not in self._workers for alias in aliases)):
-            QMessageBox.warning(self, "批量操作", "请先勾选并连接全部要操作的间接节点。")
+            QMessageBox.warning(self, tr('批量操作'), tr('请先勾选并连接全部要操作的间接节点。'))
             return
         if mode in {"worker_to_jump", "worker_to_local", "worker_to_worker"} and len(aliases) != 1:
-            QMessageBox.warning(self, "批量操作", "从间接节点移动或复制时，请只勾选一个来源节点。")
+            QMessageBox.warning(self, tr('批量操作'), tr('从间接节点移动或复制时，请只勾选一个来源节点。'))
             return
         if mode == "worker_to_worker" and (not target_alias or target_alias not in self._workers or target_alias == aliases[0]):
-            QMessageBox.warning(self, "批量操作", "请选择另一个已连接的目标间接节点。")
+            QMessageBox.warning(self, tr('批量操作'), tr('请选择另一个已连接的目标间接节点。'))
             return
         if moving and mode.endswith("to_workers") and len(aliases) > 1:
-            QMessageBox.warning(self, "批量操作", "向多个间接节点只能复制；请取消“移动”选项。")
+            QMessageBox.warning(self, tr('批量操作'), tr('向多个间接节点只能复制；请取消“移动”选项。'))
             return
         if not sources:
-            QMessageBox.warning(self, "批量操作", "请先在对应的文件列表中选中文件或文件夹。")
+            QMessageBox.warning(self, tr('批量操作'), tr('请先在对应的文件列表中选中文件或文件夹。'))
             return
         if mode != "delete_workers" and not destination:
-            QMessageBox.warning(self, "批量操作", "请填写目标目录。")
+            QMessageBox.warning(self, tr('批量操作'), tr('请填写目标目录。'))
             return
         if mode not in {"worker_to_local", "jump_to_local", "delete_workers"} and not destination.startswith("/"):
-            QMessageBox.warning(self, "批量操作", "远程目标目录必须是绝对路径。")
+            QMessageBox.warning(self, tr('批量操作'), tr('远程目标目录必须是绝对路径。'))
             return
         if mode in {"worker_to_jump", "worker_to_local", "worker_to_worker", "delete_workers"} and not worker_path.startswith("/"):
-            QMessageBox.warning(self, "批量操作", "间接节点当前路径必须是绝对路径。")
+            QMessageBox.warning(self, tr('批量操作'), tr('间接节点当前路径必须是绝对路径。'))
             return
         if mode in {"worker_to_local", "jump_to_local"} and not Path(destination).is_dir():
-            QMessageBox.warning(self, "批量操作", "本地目标目录不存在。")
+            QMessageBox.warning(self, tr('批量操作'), tr('本地目标目录不存在。'))
             return
         if mode == "delete_workers":
             choice = QMessageBox.question(
-                self, "确认批量删除",
-                f"在 {len(aliases)} 个间接节点上永久删除所选 {len(sources)} 个名称及其内容？\n"
-                "此操作不能撤销；缺失项目将作为该节点的失败结果报告。",
+                self, tr('确认批量删除'),
+                tr('在 {0} 个间接节点上永久删除所选 {1} 个名称及其内容？\n此操作不能撤销；缺失项目将作为该节点的失败结果报告。', f'{len(aliases)}', f'{len(sources)}'),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -2855,9 +2862,8 @@ class MainWindow(QMainWindow):
                 return
         elif moving:
             choice = QMessageBox.question(
-                self, "确认批量移动",
-                "目标完整复制成功后删除来源？\n"
-                "任何跳过或取消都不会删除对应来源；已完成的节点不会自动回滚。",
+                self, tr('确认批量移动'),
+                tr('目标完整复制成功后删除来源？\n任何跳过或取消都不会删除对应来源；已完成的节点不会自动回滚。'),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -3028,14 +3034,14 @@ class MainWindow(QMainWindow):
                 self._schedule_auto_hash()
             self.local.refresh()
             complete = sum(result.complete for result in results)
-            self._notify_done(f"批量操作完成：{complete}/{len(results)} 个节点成功；详情见下方结果表。")
+            self._notify_done(tr('批量操作完成：{0}/{1} 个节点成功；详情见下方结果表。', f'{complete}', f'{len(results)}'))
 
         targets = compact_node_aliases(list(nodes))
         action_name = "删除" if mode == "delete_workers" else "移动" if moving else "复制"
         source_text = self._log_paths(sources)
         target_text = "" if mode == "delete_workers" else f" → {destination}"
         self._run(
-            work, success, f"正在对 {len(nodes)} 个间接节点执行批量操作…",
+            work, success, tr('正在对 {0} 个间接节点执行批量操作…', f'{len(nodes)}'),
             log_action=f"并行{action_name}（{targets}）：{source_text}{target_text}",
             log_result=self._batch_log_result,
             log_context={"sources": sources, "destination": destination, "nodes": list(nodes)},
@@ -3048,16 +3054,15 @@ class MainWindow(QMainWindow):
     def _show_batch_result(self, result: BatchResult) -> None:
         row = self.batch_results.rowCount()
         self.batch_results.insertRow(row)
-        state = "失败" if result.error else "取消" if result.copied and result.copied.cancelled else (
-            "已跳过" if result.copied and result.copied.skipped else "完成"
+        state = tr('失败') if result.error else tr('取消') if result.copied and result.copied.cancelled else (
+            tr('已跳过') if result.copied and result.copied.skipped else tr('完成')
         )
         detail = result.error or (
-            f"{result.copied.files} 文件，{result.copied.directories} 目录，"
-            f"跳过 {result.copied.skipped}，删除来源 {result.deleted}"
-            if result.copied else f"已删除 {result.deleted} 项"
+            tr('{0} 文件，{1} 目录，跳过 {2}，删除来源 {3}', f'{result.copied.files}', f'{result.copied.directories}', f'{result.copied.skipped}', f'{result.deleted}')
+            if result.copied else tr('已删除 {0} 项', f'{result.deleted}')
         )
-        for column, value in enumerate((result.alias, self._batch_mode_label, state, detail)):
-            self.batch_results.setItem(row, column, QTableWidgetItem(value))
+        for column, value in enumerate((result.alias, tr(self._batch_mode_label), state, detail)):
+            self.batch_results.setItem(row, column, ui(QTableWidgetItem, value))
 
     @staticmethod
     def _log_paths(paths: list[str]) -> str:
@@ -3154,7 +3159,7 @@ class MainWindow(QMainWindow):
                 context=self._redact_log_value(context),
             )
         except OSError as exc:
-            self.status.setText(f"日志文件写入失败：{exc}")
+            ui(self.status.setText, tr('日志文件写入失败：{0}', f'{exc}'))
             logging.getLogger("nodebridge.activity").warning("操作日志写入失败：%s", exc)
 
     def _record_activity(self, category: str, action: str, state: str,
@@ -3188,10 +3193,10 @@ class MainWindow(QMainWindow):
             )
 
     def _show_connection_fields(self, config: NodeConfig) -> None:
-        self.host.setText(config.host)
+        ui(self.host.setText, config.host)
         self.port.setValue(config.port)
-        self.user.setText(config.username)
-        self.key_file.setText(config.key_file or "")
+        ui(self.user.setText, config.username)
+        ui(self.key_file.setText, config.key_file or "")
         self.password.clear()
 
     def _run(
@@ -3220,7 +3225,7 @@ class MainWindow(QMainWindow):
             return
         if self._job is not None:
             return
-        self.status.setText(description)
+        ui(self.status.setText, tr(description))
         self._active_log_index = self._append_operation_log(log_action, "进行中") if log_action else None
         self._active_log_id = uuid.uuid4().hex if log_action else None
         self._active_log_action = log_action
@@ -3264,7 +3269,7 @@ class MainWindow(QMainWindow):
         if getattr(self, job_attribute, None) is not None:
             return
         if not scanning:
-            self.status.setText(description)
+            ui(self.status.setText, tr(description))
         event_id = uuid.uuid4().hex
         started = time.monotonic()
         index = self._append_operation_log(log_action, "进行中") if log_action else None
@@ -3317,8 +3322,8 @@ class MainWindow(QMainWindow):
             finish_log("失败", message)
             if scanning:
                 if not self._tmux_cancel.is_set():
-                    self.tasks_workspace.summary.setText("持久终端扫描失败，可稍后重试；其他操作不受影响。")
-                    self.tasks_workspace.summary.setToolTip(self._redact_log_value(message))
+                    ui(self.tasks_workspace.summary.setText, tr('持久终端扫描失败，可稍后重试；其他操作不受影响。'))
+                    ui(self.tasks_workspace.summary.setToolTip, self._redact_log_value(message))
             elif file_scopes is not None or job_attribute in {"_remote_browse_job", "_worker_browse_job"}:
                 self._show_background_error(message)
             else:
@@ -3395,11 +3400,11 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, lambda: self._browse_workers(path, parent_fallback))
 
     def _show_error(self, message: str) -> None:
-        self.status.setText("操作失败")
-        QMessageBox.warning(self, "NodeBridge", message)
+        ui(self.status.setText, tr('操作失败'))
+        QMessageBox.warning(self, "NodeBridge", tr(message))
 
     def _show_background_error(self, message: str) -> None:
-        self.status.setText("文件任务失败；详情见操作日志。")
+        ui(self.status.setText, tr('文件任务失败；详情见操作日志。'))
         box = QMessageBox(QMessageBox.Icon.Warning, "NodeBridge", message,
                           QMessageBox.StandardButton.Ok, self)
         box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
@@ -3407,8 +3412,8 @@ class MainWindow(QMainWindow):
         box.show()
 
     def _notify_done(self, message: str) -> None:
-        self.status.setText(message)
-        self.completion_toast.setText(message)
+        ui(self.status.setText, message)
+        ui(self.completion_toast.setText, message)
         self.completion_toast.setFixedWidth(min(420, max(200, self.width() - 32)))
         self.completion_toast.adjustSize()
         self._position_completion_toast()
@@ -3455,15 +3460,15 @@ class MainWindow(QMainWindow):
                 prompt.create = self._missing_destination_choice
                 return
             dialog = QMessageBox(self)
-            dialog.setWindowTitle("目标目录不存在")
+            ui(dialog.setWindowTitle, tr('目标目录不存在'))
             dialog.setIcon(QMessageBox.Icon.Question)
-            dialog.setText(f"节点 {prompt.alias} 的目标目录不存在：\n{prompt.path}")
-            dialog.setInformativeText("是否创建缺少的各级目录后复制？\n跳过则不向此节点复制，其他节点继续。")
+            ui(dialog.setText, tr('节点 {0} 的目标目录不存在：\n{1}', f'{prompt.alias}', f'{prompt.path}'))
+            ui(dialog.setInformativeText, tr('是否创建缺少的各级目录后复制？\n跳过则不向此节点复制，其他节点继续。'))
             dialog.setDetailedText("需要创建：\n" + "\n".join(prompt.missing))
-            create = dialog.addButton("新建路径并复制", QMessageBox.ButtonRole.AcceptRole)
-            skip = dialog.addButton("跳过此节点", QMessageBox.ButtonRole.RejectRole)
+            create = ui(dialog.addButton, tr('新建路径并复制'), QMessageBox.ButtonRole.AcceptRole)
+            skip = ui(dialog.addButton, tr('跳过此节点'), QMessageBox.ButtonRole.RejectRole)
             dialog.setDefaultButton(skip)
-            checkbox = QCheckBox("总是使用此操作（仅本次复制任务）", dialog)
+            checkbox = ui(QCheckBox, tr('总是使用此操作（仅本次复制任务）'), dialog)
             dialog.setCheckBox(checkbox)
             dialog.exec()
             prompt.create = dialog.clickedButton() is create
@@ -3495,18 +3500,16 @@ class MainWindow(QMainWindow):
         try:
             dialog = QMessageBox(self)
             dialog.setIcon(QMessageBox.Icon.Question)
-            dialog.setWindowTitle("间接节点目录已存在")
-            dialog.setText(
-                f"{prompt.path} 在 {len(prompt.aliases)} 个节点上已有同名项目。\n"
-                f"冲突节点：{compact_node_aliases(prompt.aliases)}"
+            ui(dialog.setWindowTitle, tr('间接节点目录已存在'))
+            ui(dialog.setText,
+                tr('{0} 在 {1} 个节点上已有同名项目。\n冲突节点：{2}', f'{prompt.path}', f'{len(prompt.aliases)}', f'{compact_node_aliases(prompt.aliases)}')
             )
-            dialog.setInformativeText(
-                "其他目标节点仍会创建原名目录。对于冲突节点，请选择跳过，"
-                "或分别创建名称末尾带序号的新目录（例如 名称 (2)）。"
+            ui(dialog.setInformativeText,
+                tr('其他目标节点仍会创建原名目录。对于冲突节点，请选择跳过，或分别创建名称末尾带序号的新目录（例如 名称 (2)）。')
             )
-            skip_button = dialog.addButton("跳过已有项目", QMessageBox.ButtonRole.AcceptRole)
-            number_button = dialog.addButton("新建带序号的目录", QMessageBox.ButtonRole.ActionRole)
-            cancel_button = dialog.addButton(QMessageBox.StandardButton.Cancel)
+            skip_button = ui(dialog.addButton, tr('跳过已有项目'), QMessageBox.ButtonRole.AcceptRole)
+            number_button = ui(dialog.addButton, tr('新建带序号的目录'), QMessageBox.ButtonRole.ActionRole)
+            cancel_button = ui(dialog.addButton, QMessageBox.StandardButton.Cancel)
             dialog.setDefaultButton(cancel_button)
             dialog.exec()
             if dialog.clickedButton() is skip_button:
@@ -3528,7 +3531,7 @@ class MainWindow(QMainWindow):
         host = self.host.text().strip()
         username = self.user.text().strip()
         if not host or not username:
-            QMessageBox.warning(self, "NodeBridge", "请输入主机和用户名。")
+            QMessageBox.warning(self, "NodeBridge", tr('请输入主机和用户名。'))
             return
         config = NodeConfig(host, self.port.value(), username, self.key_file.text().strip() or None)
         password = self.password.text() or None
@@ -3544,7 +3547,7 @@ class MainWindow(QMainWindow):
         if self._job is not None or self._remote_files_active():
             return
         if jump is not None and self._current_listing is None:
-            QMessageBox.warning(self, "NodeBridge", "当前站点目录尚未加载完成。")
+            QMessageBox.warning(self, "NodeBridge", tr('当前站点目录尚未加载完成。'))
             return
         if password:
             self._log_secrets.add(password)
@@ -3566,15 +3569,15 @@ class MainWindow(QMainWindow):
                 self._parents.append((jump, self._current_listing))
             self._session, listing = result
             self._sync_terminal_nodes()
-            self.jump_title.setText(f"{'直连节点' if jump is None else '当前站点'} · {config.host}")
+            ui(self.jump_title.setText, f"{tr('直连节点') if jump is None else tr('当前站点')} · {config.host}")
             self._show_connection_fields(config)
             self.tree.clear()
             self._show_listing(listing)
             route = f"（经 {jump.config.host} 中转）" if jump is not None else ""
-            self.status.setText(f"已连接到 {config.host}{route}，当前目录：{listing.path}")
+            ui(self.status.setText, tr('已连接到 {0}{1}，当前目录：{2}', f'{config.host}', f'{route}', f'{listing.path}'))
             if jump is None:
                 self._jump_password = password
-                self.worker_browser.path_edit.setText(listing.path)
+                ui(self.worker_browser.path_edit.setText, listing.path)
                 self._pending_worker_discovery = True
 
         description = "正在通过当前站点连接目标…" if jump is not None else "正在连接并读取目录…"
@@ -3589,14 +3592,14 @@ class MainWindow(QMainWindow):
 
     def _disconnect(self) -> None:
         if self._tmux_job is not None:
-            self.status.setText("请等待远程会话结束操作完成后再断开站点。")
+            ui(self.status.setText, tr('请等待远程会话结束操作完成后再断开站点。'))
             return
         if self._worker_connect_job is not None:
-            self.status.setText("请等待间接节点连接结束后再断开直连节点。")
+            ui(self.status.setText, tr('请等待间接节点连接结束后再断开直连节点。'))
             return
         if (self._remote_files_active() or self._remote_browse_job is not None
                 or self._worker_browse_job is not None):
-            self.status.setText("请等待远程文件任务完成后再断开连接。")
+            ui(self.status.setText, tr('请等待远程文件任务完成后再断开连接。'))
             return
         session = self._session
         if session is None:
@@ -3647,25 +3650,25 @@ class MainWindow(QMainWindow):
             if self._parents:
                 parent, listing = self._parents.pop()
                 self._session = parent
-                self.jump_title.setText(f"当前站点 · {parent.config.host}")
+                ui(self.jump_title.setText, tr('当前站点 · {0}', f'{parent.config.host}'))
                 self._show_connection_fields(parent.config)
                 self.tree.clear()
                 self._show_listing(listing)
-                self.status.setText(f"已返回 {parent.config.host}，当前目录：{listing.path}")
+                ui(self.status.setText, tr('已返回 {0}，当前目录：{1}', f'{parent.config.host}', f'{listing.path}'))
             else:
                 self._session = None
                 self._jump_password = None
-                self.jump_title.setText("直连节点 · 尚未连接")
+                ui(self.jump_title.setText, tr('直连节点 · 尚未连接'))
                 self._current_listing = None
                 self._path = ""
                 self.path_edit.clear()
                 self.tree.clear()
                 self.table.setRowCount(0)
-                self.status.setText("已断开" if not errors else f"已断开；关闭时有 {len(errors)} 个错误。")
+                ui(self.status.setText, (tr('已断开') if not errors else tr('已断开；关闭时有 {0} 个错误。', f'{len(errors)}')))
             self._sync_terminal_nodes()
 
         self._run(
-            work, success, "正在断开…",
+            work, success, tr('正在断开…'),
             log_action=f"SSH/SFTP 断开（{session.config.host}）",
             log_category="connection", log_context={"node": session.config.host},
             log_result=lambda errors: (
@@ -3675,11 +3678,11 @@ class MainWindow(QMainWindow):
         )
 
     def _make_directory_item(self, path: str) -> QTreeWidgetItem:
-        item = QTreeWidgetItem([posixpath.basename(path.rstrip("/")) or "/"])
+        item = ui(QTreeWidgetItem, [posixpath.basename(path.rstrip("/")) or "/"])
         item.setIcon(0, self._directory_icon)
         item.setData(0, PATH_ROLE, path)
         item.setData(0, LOADED_ROLE, False)
-        item.addChild(QTreeWidgetItem(["…"]))
+        item.addChild(ui(QTreeWidgetItem, ["…"]))
         return item
 
     def _fill_tree(self, parent: QTreeWidgetItem, listing: DirectoryListing) -> None:
@@ -3738,29 +3741,29 @@ class MainWindow(QMainWindow):
         self._listing_version += 1
         self._current_listing = listing
         self._path = listing.path
-        self.path_edit.setText(listing.path)
+        ui(self.path_edit.setText, listing.path)
         self.table.current_path = listing.path
         self.table.session_token = str(id(self._session)) if self._session is not None else ""
         self.table.setRowCount(len(listing.entries))
         for row, entry in enumerate(listing.entries):
-            name = QTableWidgetItem(entry.name)
+            name = ui(QTableWidgetItem, entry.name)
             name.setIcon(self._directory_icon if entry.is_dir else self._file_icons.for_filename(entry.name))
             name.setData(PATH_ROLE, entry.path)
             name.setData(LOADED_ROLE, entry.is_dir)
             size = "" if entry.is_dir or entry.size is None else f"{entry.size:,}"
-            size_item = QTableWidgetItem(size)
+            size_item = ui(QTableWidgetItem, size)
             size_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             modified = "" if entry.modified is None else datetime.fromtimestamp(entry.modified).strftime("%Y-%m-%d %H:%M")
             suffix = posixpath.splitext(entry.name)[1].lstrip(".").upper()
-            file_type = "文件夹" if entry.is_dir else "符号链接" if entry.is_symlink else f"{suffix} 文件" if suffix else "文件"
+            file_type = tr('文件夹') if entry.is_dir else tr('符号链接') if entry.is_symlink else tr('{0} 文件', f'{suffix}') if suffix else tr('文件')
             for column, value in enumerate((
-                name, size_item, QTableWidgetItem(file_type), QTableWidgetItem(modified)
+                name, size_item, ui(QTableWidgetItem, file_type), ui(QTableWidgetItem, modified)
             )):
                 self.table.setItem(row, column, value)
         item = self._ensure_tree_item(listing.path)
         self._fill_tree(item, listing)
         self.tree.setCurrentItem(item)
-        self.status.setText(f"{listing.path} — {len(listing.entries)} 项")
+        ui(self.status.setText, tr('{0} — {1} 项', f'{listing.path}', f'{len(listing.entries)}'))
 
     def _browse(self, path: str, tree_only: QTreeWidgetItem | None = None) -> None:
         session = self._session
@@ -3772,9 +3775,9 @@ class MainWindow(QMainWindow):
                 self._show_listing(result)
             else:
                 self._fill_tree(tree_only, result)
-                self.status.setText(f"已展开 {result.path}")
+                ui(self.status.setText, tr('已展开 {0}', f'{result.path}'))
 
-        self._run(lambda: session.list_directory(path), success, f"正在读取 {path}…",
+        self._run(lambda: session.list_directory(path), success, tr('正在读取 {0}…', f'{path}'),
                   background_slot="_remote_browse_job")
 
     def _expand_tree(self, item: QTreeWidgetItem) -> None:
@@ -3831,18 +3834,18 @@ class MainWindow(QMainWindow):
             row = self.table.itemAt(point).row()
             if self.table.item(row, 0).data(LOADED_ROLE):
                 destination = paths[0]
-        menu = QMenu(self.table)
+        menu = ui(QMenu, self.table)
         if paths:
-            menu.addAction("复制\tCtrl+C", self._copy_remote_selection)
-            menu.addAction("下载到…", self._download_selected_to)
-            menu.addAction("重命名\tF2", self._rename_remote_selection).setEnabled(len(paths) == 1)
-            menu.addAction("删除\tDelete", self._delete_remote_selection)
+            ui(menu.addAction, tr('复制\tCtrl+C'), self._copy_remote_selection)
+            ui(menu.addAction, tr('下载到…'), self._download_selected_to)
+            ui(menu.addAction, tr('重命名\tF2'), self._rename_remote_selection).setEnabled(len(paths) == 1)
+            ui(menu.addAction, tr('删除\tDelete'), self._delete_remote_selection)
             menu.addSeparator()
-        menu.addAction("粘贴\tCtrl+V", lambda: self._paste_remote(destination))
-        menu.addAction("创建目录", lambda: self._create_remote_directory(False))
-        menu.addAction("创建目录并进入", lambda: self._create_remote_directory(True))
+        ui(menu.addAction, tr('粘贴\tCtrl+V'), lambda: self._paste_remote(destination))
+        ui(menu.addAction, tr('创建目录'), lambda: self._create_remote_directory(False))
+        ui(menu.addAction, tr('创建目录并进入'), lambda: self._create_remote_directory(True))
         menu.addSeparator()
-        menu.addAction("刷新", self._refresh)
+        ui(menu.addAction, tr('刷新'), self._refresh)
         menu.exec(self.table.viewport().mapToGlobal(point))
 
     def _local_context_menu(self, point) -> None:
@@ -3857,17 +3860,17 @@ class MainWindow(QMainWindow):
         destination = self.local.current_path
         if index.isValid() and self.local.file_model.isDir(index):
             destination = self.local.file_model.filePath(index)
-        menu = QMenu(self.local_table)
+        menu = ui(QMenu, self.local_table)
         if paths:
-            menu.addAction("复制\tCtrl+C", self._copy_local_selection)
-            menu.addAction("重命名\tF2", self._rename_local_selection).setEnabled(len(paths) == 1)
-            menu.addAction("删除\tDelete", self._delete_local_selection)
+            ui(menu.addAction, tr('复制\tCtrl+C'), self._copy_local_selection)
+            ui(menu.addAction, tr('重命名\tF2'), self._rename_local_selection).setEnabled(len(paths) == 1)
+            ui(menu.addAction, tr('删除\tDelete'), self._delete_local_selection)
             menu.addSeparator()
-        menu.addAction("粘贴\tCtrl+V", lambda: self._paste_local(destination))
-        menu.addAction("创建目录", lambda: self._create_local_directory(False))
-        menu.addAction("创建目录并进入", lambda: self._create_local_directory(True))
+        ui(menu.addAction, tr('粘贴\tCtrl+V'), lambda: self._paste_local(destination))
+        ui(menu.addAction, tr('创建目录'), lambda: self._create_local_directory(False))
+        ui(menu.addAction, tr('创建目录并进入'), lambda: self._create_local_directory(True))
         menu.addSeparator()
-        menu.addAction("刷新", self.local.refresh)
+        ui(menu.addAction, tr('刷新'), self.local.refresh)
         menu.exec(self.local_table.viewport().mapToGlobal(point))
 
     def _worker_context_menu(self, point) -> None:
@@ -3879,12 +3882,12 @@ class MainWindow(QMainWindow):
             table.clearSelection()
         elif item.row() not in [index.row() for index in table.selectionModel().selectedRows(0)]:
             table.selectRow(item.row())
-        menu = QMenu(table)
+        menu = ui(QMenu, table)
         if self.worker_browser.selected_names():
-            menu.addAction("删除\tDelete", self._delete_worker_selection)
+            ui(menu.addAction, tr('删除\tDelete'), self._delete_worker_selection)
             menu.addSeparator()
-        menu.addAction("新建目录", self._create_worker_directory).setEnabled(bool(self._workers))
-        menu.addAction("刷新", lambda: self._browse_workers(self.worker_browser.rendered_path))
+        ui(menu.addAction, tr('新建目录'), self._create_worker_directory).setEnabled(bool(self._workers))
+        ui(menu.addAction, tr('刷新'), lambda: self._browse_workers(self.worker_browser.rendered_path))
         menu.exec(table.viewport().mapToGlobal(point))
 
     def _copy_remote_selection(self) -> None:
@@ -3896,7 +3899,7 @@ class MainWindow(QMainWindow):
             "session": str(id(self._session)), "paths": paths,
         }).encode("utf-8"))
         QApplication.clipboard().setMimeData(mime)
-        self.status.setText(f"已复制 {len(paths)} 个远程项目；可在 NodeBridge 中粘贴。")
+        ui(self.status.setText, tr('已复制 {0} 个远程项目；可在 NodeBridge 中粘贴。', f'{len(paths)}'))
 
     def _copy_local_selection(self) -> None:
         paths = self._local_selected_paths()
@@ -3905,7 +3908,7 @@ class MainWindow(QMainWindow):
         mime = QMimeData()
         mime.setUrls([QUrl.fromLocalFile(path) for path in paths])
         QApplication.clipboard().setMimeData(mime)
-        self.status.setText(f"已复制 {len(paths)} 个本地项目。")
+        ui(self.status.setText, tr('已复制 {0} 个本地项目。', f'{len(paths)}'))
 
     def _paste_remote(self, destination: str | None = None) -> None:
         if self._session is None or self._job is not None:
@@ -3915,7 +3918,7 @@ class MainWindow(QMainWindow):
         payload = remote_payload(mime)
         if payload is not None:
             if payload[0] != str(id(self._session)):
-                QMessageBox.warning(self, "NodeBridge", "复制的远程文件不属于当前站点。")
+                QMessageBox.warning(self, "NodeBridge", tr('复制的远程文件不属于当前站点。'))
                 return
             self._copy_remote_to_remote(payload[1], target)
         elif paths := local_urls(mime):
@@ -3937,7 +3940,7 @@ class MainWindow(QMainWindow):
         if not paths or self._session is None:
             return
         destination = QFileDialog.getExistingDirectory(
-            self, "选择本地目标目录", self.local.current_path
+            self, tr('选择本地目标目录'), self.local.current_path
         )
         if destination:
             self._copy_remote_to_local(str(id(self._session)), paths, destination, [])
@@ -3948,7 +3951,7 @@ class MainWindow(QMainWindow):
         if not paths or session is None or self._file_busy("remote"):
             return
         choice = QMessageBox.question(
-            self, "确认删除", f"永久删除选中的 {len(paths)} 个远程项目及其内容？此操作不能撤销。",
+            self, tr('确认删除'), tr('永久删除选中的 {0} 个远程项目及其内容？此操作不能撤销。', f'{len(paths)}'),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -3966,10 +3969,10 @@ class MainWindow(QMainWindow):
             if (self._session is session and self._path == browsed_path
                     and self._listing_version == version and self._remote_browse_job is None):
                 self._show_listing(result[1])
-            self._notify_done(f"已删除 {result[0]} 个远程项目。")
+            self._notify_done(tr('已删除 {0} 个远程项目。', f'{result[0]}'))
 
         self._run(
-            work, success, "正在删除远程项目…",
+            work, success, tr('正在删除远程项目…'),
             log_action=f"SFTP 删除（{self._session_label(session)}）：{self._log_paths(paths)}",
             log_context={"sources": paths, "node": self._session_label(session)},
             file_scopes=frozenset(("remote",)),
@@ -3980,7 +3983,7 @@ class MainWindow(QMainWindow):
         if not paths or self._file_busy("local"):
             return
         choice = QMessageBox.question(
-            self, "确认删除", f"将选中的 {len(paths)} 个本地项目移入回收站？",
+            self, tr('确认删除'), tr('将选中的 {0} 个本地项目移入回收站？', f'{len(paths)}'),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -3989,10 +3992,10 @@ class MainWindow(QMainWindow):
 
         def success(count):
             self.local.refresh()
-            self._notify_done(f"已将 {count} 个本地项目移入回收站。")
+            self._notify_done(tr('已将 {0} 个本地项目移入回收站。', f'{count}'))
 
         self._run(
-            lambda: trash_local(paths), success, "正在移入回收站…",
+            lambda: trash_local(paths), success, tr('正在移入回收站…'),
             log_action=f"移入本地回收站：{self._log_paths(paths)}",
             log_context={"sources": paths},
             file_scopes=frozenset(("local",)),
@@ -4025,10 +4028,10 @@ class MainWindow(QMainWindow):
             if (self._session is session and self._path == browsed_path
                     and self._listing_version == version and self._remote_browse_job is None):
                 self._show_listing(result[1])
-            self._notify_done(f"已重命名为 {posixpath.basename(result[0])}。")
+            self._notify_done(tr('已重命名为 {0}。', f'{posixpath.basename(result[0])}'))
 
         self._run(
-            work, success, "正在重命名远程项目…",
+            work, success, tr('正在重命名远程项目…'),
             log_action=f"SFTP 重命名（{self._session_label(session)}）：{source} → {name}",
             log_context={"sources": [source], "destination": posixpath.join(posixpath.dirname(source), name), "node": self._session_label(session)},
             file_scopes=frozenset(("remote",)),
@@ -4049,10 +4052,10 @@ class MainWindow(QMainWindow):
 
         def success(target):
             self.local.refresh()
-            self._notify_done(f"已重命名为 {target.name}。")
+            self._notify_done(tr('已重命名为 {0}。', f'{target.name}'))
 
         self._run(
-            lambda: rename_local(source, name), success, "正在重命名本地项目…",
+            lambda: rename_local(source, name), success, tr('正在重命名本地项目…'),
             log_action=f"本地重命名：{source} → {name}",
             log_context={"sources": [source], "destination": str(Path(source).with_name(name))},
             file_scopes=frozenset(("local",)),
@@ -4062,7 +4065,7 @@ class MainWindow(QMainWindow):
         session = self._session
         if session is None or self._file_busy("remote"):
             return
-        name, accepted = QInputDialog.getText(self, "创建目录", "目录名称：")
+        name, accepted = QInputDialog.getText(self, tr('创建目录'), tr('目录名称：'))
         if not accepted:
             return
         parent = self._path
@@ -4077,10 +4080,10 @@ class MainWindow(QMainWindow):
             if (self._session is session and self._path == parent
                     and self._listing_version == version and self._remote_browse_job is None):
                 self._show_listing(result[1])
-            self._notify_done(f"已创建目录 {result[0]}。")
+            self._notify_done(tr('已创建目录 {0}。', f'{result[0]}'))
 
         self._run(
-            work, success, "正在创建远程目录…",
+            work, success, tr('正在创建远程目录…'),
             log_action=f"SFTP 创建目录（{self._session_label(session)}）：{posixpath.join(parent, name)}",
             log_context={"destination": posixpath.join(parent, name), "node": self._session_label(session)},
             file_scopes=frozenset(("remote",)),
@@ -4089,7 +4092,7 @@ class MainWindow(QMainWindow):
     def _create_local_directory(self, enter: bool) -> None:
         if self._file_busy("local"):
             return
-        name, accepted = QInputDialog.getText(self, "创建目录", "目录名称：")
+        name, accepted = QInputDialog.getText(self, tr('创建目录'), tr('目录名称：'))
         if not accepted:
             return
         parent = self.local.current_path
@@ -4099,10 +4102,10 @@ class MainWindow(QMainWindow):
                 self.local.navigate(str(target))
             else:
                 self.local.refresh()
-            self._notify_done(f"已创建目录 {target}。")
+            self._notify_done(tr('已创建目录 {0}。', f'{target}'))
 
         self._run(
-            lambda: create_local_directory(parent, name), success, "正在创建本地目录…",
+            lambda: create_local_directory(parent, name), success, tr('正在创建本地目录…'),
             log_action=f"本地创建目录：{Path(parent) / name}",
             log_context={"destination": str(Path(parent) / name)},
             file_scopes=frozenset(("local",)),
@@ -4126,7 +4129,7 @@ class MainWindow(QMainWindow):
             self._notify_done(self._copy_status("复制", result))
 
         self._run(
-            work, success, "正在复制本地文件…",
+            work, success, tr('正在复制本地文件…'),
             log_action=f"本地复制：{self._log_paths(paths)} → {destination}",
             log_result=self._copy_log_result,
             log_context={"sources": paths, "destination": destination},
@@ -4162,7 +4165,7 @@ class MainWindow(QMainWindow):
             self._notify_done(self._copy_status("复制", result))
 
         self._run(
-            work, success, "正在复制远程文件…",
+            work, success, tr('正在复制远程文件…'),
             log_action=f"SFTP 复制（{self._session_label(session)}）：{self._log_paths(paths)} → {destination}",
             log_result=self._copy_log_result,
             log_context={"sources": paths, "destination": destination, "node": self._session_label(session)},
@@ -4198,7 +4201,7 @@ class MainWindow(QMainWindow):
             self._notify_done(self._copy_status("上传", result))
 
         self._run(
-            work, success, "正在检查并上传文件…",
+            work, success, tr('正在检查并上传文件…'),
             log_action=f"SFTP 上传（{self._session_label(session)}）：{self._log_paths(paths)} → {destination}",
             log_result=self._copy_log_result,
             log_context={"sources": paths, "destination": destination, "node": self._session_label(session)},
@@ -4237,7 +4240,7 @@ class MainWindow(QMainWindow):
             self._notify_done(self._copy_status("下载", result))
 
         self._run(
-            work, success, "正在检查并下载文件…",
+            work, success, tr('正在检查并下载文件…'),
             log_action=f"SFTP 下载（{self._session_label(session)}）：{self._log_paths(paths)} → {destination}",
             log_result=self._copy_log_result,
             log_context={"sources": paths, "destination": destination, "node": self._session_label(session)},
@@ -4275,10 +4278,10 @@ class MainWindow(QMainWindow):
         def success(result):
             exported.extend(result)
             self._drag_cache[key] = (time.monotonic(), temporary, exported)
-            self.status.setText("文件已准备好，可以拖到本地目录或资源管理器。")
+            ui(self.status.setText, tr('文件已准备好，可以拖到本地目录或资源管理器。'))
 
         self._run(
-            work, success, "正在准备拖出的文件…", loop.quit,
+            work, success, tr('正在准备拖出的文件…'), loop.quit,
             log_action=f"SFTP 准备拖出缓存（{self._session_label(session)}）：{self._log_paths(paths)}",
             log_context={"sources": paths, "node": self._session_label(session), "note": "Windows 资源管理器最终复制结果不可见"},
             background_copy=True,
@@ -4290,34 +4293,39 @@ class MainWindow(QMainWindow):
         return exported
 
     def closeEvent(self, event) -> None:
+        if getattr(self, "_recovery", None) is not None and not self._recovery.allow_close():
+            event.ignore()
+            return
         self._tmux_restore_queue.clear()
         if self._tmux_scan_job is not None:
             event.ignore()
             self._tmux_cancel.set()
             self._tmux_scan_job.finished.connect(self.close)
-            self.status.setText("正在取消后台持久终端扫描…")
+            ui(self.status.setText, tr('正在取消后台持久终端扫描…'))
             return
         if self._tmux_job is not None:
             event.ignore()
             self._tmux_cancel.set()
             self._tmux_job.finished.connect(self.close)
-            self.status.setText("正在等待持久终端操作完成，请稍后关闭。")
+            ui(self.status.setText, tr('正在等待持久终端操作完成，请稍后关闭。'))
             return
         if self._worker_connect_job is not None:
             event.ignore()
-            self.status.setText("请等待间接节点连接结束后再关闭。")
+            ui(self.status.setText, tr('请等待间接节点连接结束后再关闭。'))
             return
         if (self._file_tasks or self._remote_browse_job is not None
                 or self._worker_browse_job is not None):
             event.ignore()
-            self.status.setText("请等待后台文件任务完成后再关闭。")
+            ui(self.status.setText, tr('请等待后台文件任务完成后再关闭。'))
             return
         if self._job is not None:
             event.ignore()
-            self.status.setText("请等待当前操作完成后再关闭。")
+            ui(self.status.setText, tr('请等待当前操作完成后再关闭。'))
             return
         if self._session is not None:
             event.ignore()
+            if getattr(self, "_recovery", None) is not None:
+                self._recovery.begin_disconnect()
             self._disconnect()
             if self._job is not None:
                 self._job.finished.connect(self.close)
@@ -4329,7 +4337,7 @@ class MainWindow(QMainWindow):
             self._probe_cancel.set()
             if self._resource_monitor is not None:
                 self._resource_monitor.cancel.set()
-            self.status.setText("正在结束后台校验和节点探测…")
+            ui(self.status.setText, tr('正在结束后台校验和节点探测…'))
             return
         for _created, temporary, _paths in self._drag_cache.values():
             temporary.cleanup()

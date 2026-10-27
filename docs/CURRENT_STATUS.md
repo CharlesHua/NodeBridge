@@ -1,5 +1,13 @@
 # Current status / 当前状态
 
+Exit confirmation and opt-in startup connection recovery are implemented; see [RECOVERY.md](RECOVERY.md) for persistence, credential handling and limitations. Live SSH and forced-exit Windows acceptance remain pending.
+
+已实现退出确认和经用户确认的启动连接恢复；持久记录、认证处理及限制见 [RECOVERY.md](RECOVERY.md)。仍待真实 SSH 和 Windows 强制退出验收。
+
+Simplified Chinese and English interfaces are available through View → Language (applies immediately). File logs and the built-in Chinese guide remain unchanged. See [I18N.md](I18N.md) for translation boundaries and maintenance. Portable rebuilding and live UI acceptance remain pending.
+
+现可通过“查看 → 语言”选择简体中文或英文界面（立即生效）。文件日志和内置中文指南保持不变。翻译边界和维护方式见 [I18N.md](I18N.md)；仍待重新构建绿色版及实机界面验收。
+
 The first-terminal whole-window disappearance was reproduced on native Windows: adding WebEngine changed the main window from RasterSurface to Direct3DSurface, replaced its HWND, and emitted Hide/Show events. A persistent hidden, unloaded Qt Quick child now prepares the main window's graphics surface before first show. Native normal/maximized tests verified unchanged HWND and surface type, no Hide/Show/recreation events, and successful terminal/combined-view loading and reopening. The control probe without preparation still reproduces the issue. This is distinct from the earlier white-background fix. Portable rebuilding and owner-side acceptance remain pending.
 
 已在原生 Windows 复现首次终端导致整个窗口消失：添加 WebEngine 时，主窗口从 RasterSurface 切换到 Direct3DSurface，更换 HWND 并发出 Hide／Show 事件。现通过常驻、隐藏且不加载内容的 Qt Quick 子控件，在首次显示前准备主窗口图形表面。原生普通／最大化测试确认 HWND 及表面类型不变，无隐藏／显示／重建事件，终端、联合视图及关闭后重开均成功加载；禁用准备逻辑的对照仍可复现。此问题与此前白底修复不同，绿色版重新打包及所有者实机验收仍待完成。

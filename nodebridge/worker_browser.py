@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from nodebridge.i18n import tr, ui
+from nodebridge.flow_layout import FlowLayout
+
 import json
 import posixpath
 from PySide6.QtCore import QMimeData, QSignalBlocker, Qt, Signal
@@ -128,20 +131,20 @@ class WorkerBrowser(QWidget):
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(5)
         title_widget = QWidget()
-        title_widget.setFixedHeight(28)
-        title = QHBoxLayout(title_widget)
+        title_widget.setMinimumHeight(28)
+        title = FlowLayout(title_widget)
         title.setContentsMargins(0, 0, 0, 0)
-        title.addWidget(QLabel("间接节点"))
+        title.addWidget(ui(QLabel, tr('间接节点')))
         self.mode = QComboBox()
-        self.mode.addItems(["合并查看", "单节点查看"])
+        ui(self.mode.addItems, [tr('合并查看'), tr('单节点查看')])
         self.mode.currentIndexChanged.connect(self._mode_changed)
         title.addWidget(self.mode)
-        self.discover_button = QPushButton("发现节点")
-        self.add_button = QPushButton("添加别名…")
-        self.select_all_button = QPushButton("全选")
-        self.clear_selection_button = QPushButton("清空")
-        self.connect_button = QPushButton("连接勾选")
-        self.disconnect_button = QPushButton("断开勾选")
+        self.discover_button = ui(QPushButton, tr('发现节点'))
+        self.add_button = ui(QPushButton, tr('添加别名…'))
+        self.select_all_button = ui(QPushButton, tr('全选'))
+        self.clear_selection_button = ui(QPushButton, tr('清空'))
+        self.connect_button = ui(QPushButton, tr('连接勾选'))
+        self.disconnect_button = ui(QPushButton, tr('断开勾选'))
         self.select_all_button.clicked.connect(lambda: self._check_all(True))
         self.clear_selection_button.clicked.connect(lambda: self._check_all(False))
         for button in (self.discover_button, self.add_button, self.select_all_button, self.clear_selection_button,
@@ -154,18 +157,17 @@ class WorkerBrowser(QWidget):
             (self.disconnect_button, self.disconnectRequested),
         ):
             button.clicked.connect(signal)
-        title.addStretch(1)
         layout.addWidget(title_widget)
 
         navigation = QHBoxLayout()
-        navigation.addWidget(QLabel("共同路径:"))
+        navigation.addWidget(ui(QLabel, tr('共同路径:')))
         self.path_edit = QLineEdit()
-        self.path_edit.setPlaceholderText("间接节点上的绝对路径")
+        ui(self.path_edit.setPlaceholderText, tr('间接节点上的绝对路径'))
         self.path_edit.returnPressed.connect(self._browse_path)
         navigation.addWidget(self.path_edit, 1)
-        self.up_button = QPushButton("上一级")
-        self.refresh_button = QPushButton("刷新")
-        self.create_directory_button = QPushButton("新建目录")
+        self.up_button = ui(QPushButton, tr('上一级'))
+        self.refresh_button = ui(QPushButton, tr('刷新'))
+        self.create_directory_button = ui(QPushButton, tr('新建目录'))
         self.up_button.clicked.connect(self._up)
         self.refresh_button.clicked.connect(self._browse_path)
         self.create_directory_button.clicked.connect(self.createDirectoryRequested)
@@ -176,18 +178,18 @@ class WorkerBrowser(QWidget):
 
         panes = QSplitter(Qt.Orientation.Horizontal)
         self.nodes = NodeCheckTree()
-        self.nodes.setHeaderLabels(["节点", "连接"])
+        ui(self.nodes.setHeaderLabels, [tr('节点'), tr('连接')])
         self.nodes.header().setFixedHeight(23)
         self.nodes.setRootIsDecorated(False)
         self.nodes.setColumnWidth(0, 85)
         self.nodes.itemClicked.connect(self._focus_item)
         self.nodes.itemDoubleClicked.connect(lambda *_: self.connectRequested.emit())
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabel("合并目录")
+        ui(self.tree.setHeaderLabel, "合并目录")
         self.tree.header().setFixedHeight(23)
         self.tree.itemClicked.connect(self._tree_clicked)
         self.table = WorkerFileTable(self)
-        self.table.setHorizontalHeaderLabels(["文件名", "文件大小", "文件类型", "所在节点", "差异"])
+        ui(self.table.setHorizontalHeaderLabels, [tr('文件名'), tr('文件大小'), tr('文件类型'), tr('所在节点'), tr('差异')])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -204,7 +206,8 @@ class WorkerBrowser(QWidget):
             panes.addWidget(widget)
         panes.setSizes([150, 190, 500])
         layout.addWidget(panes, 1)
-        self.summary = QLabel("连接直连节点后，可发现其 SSH 配置及主机列表中的节点。")
+        self.summary = ui(QLabel, tr('连接直连节点后，可发现其 SSH 配置及主机列表中的节点。'))
+        self.summary.setWordWrap(True)
         layout.addWidget(self.summary)
 
     def set_busy(self, busy: bool, connected: bool) -> None:
@@ -228,27 +231,27 @@ class WorkerBrowser(QWidget):
         self._aliases = sorted(set(self._aliases).union(aliases), key=str.casefold)
         self.nodes.clear()
         for alias in self._aliases:
-            state, detail = self._probe_status.get(alias, ("unknown", "尚未检测 SSH 可连接性"))
+            state, detail = self._probe_status.get(alias, ("unknown", tr('尚未检测 SSH 可连接性')))
             label = {
-                "checking": "… 检测中", "reachable": "○ 可连接",
-                "unreachable": "○ 不可连接", "untrusted": "○ 主机密钥待核验",
-                "auth": "○ 认证失败", "error": "○ 检测失败",
-            }.get(state, "○ 未检测")
-            item = QTreeWidgetItem(self.nodes, [
-                alias, "● 已连接" if alias in self._connected else label,
+                "checking": tr('… 检测中'), "reachable": tr('○ 可连接'),
+                "unreachable": tr('○ 不可连接'), "untrusted": tr('○ 主机密钥待核验'),
+                "auth": tr('○ 认证失败'), "error": tr('○ 检测失败'),
+            }.get(state, tr('○ 未检测'))
+            item = ui(QTreeWidgetItem, self.nodes, [
+                alias, tr('● 已连接') if alias in self._connected else label,
             ])
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(0, Qt.CheckState.Checked if alias in checked else Qt.CheckState.Unchecked)
             if alias not in self._connected:
-                item.setToolTip(0, detail)
-                item.setToolTip(1, detail)
+                ui(item.setToolTip, 0, detail)
+                ui(item.setToolTip, 1, detail)
                 if state in {"unreachable", "untrusted", "auth", "error"}:
                     gray = QBrush(QColor("#888888"))
                     item.setForeground(0, gray)
                     item.setForeground(1, gray)
             if alias == current:
                 self.nodes.setCurrentItem(item)
-        self.summary.setText(f"发现 {len(self._aliases)} 个候选别名；已连接 {len(self._connected)} 个。")
+        ui(self.summary.setText, tr('发现 {0} 个候选别名；已连接 {1} 个。', f'{len(self._aliases)}', f'{len(self._connected)}'))
 
     def set_probe_status(self, alias: str, state: str, detail: str = "") -> None:
         self.set_probe_statuses({alias: (state, detail)})
@@ -266,14 +269,14 @@ class WorkerBrowser(QWidget):
             state, detail = statuses[alias]
             connected = alias in self._connected
             label = {
-                "checking": "… 检测中", "reachable": "○ 可连接",
-                "unreachable": "○ 不可连接", "untrusted": "○ 主机密钥待核验",
-                "auth": "○ 认证失败", "error": "○ 检测失败",
-            }.get(state, "○ 未检测")
-            item.setText(1, "● 已连接" if connected else label)
+                "checking": tr('… 检测中'), "reachable": tr('○ 可连接'),
+                "unreachable": tr('○ 不可连接'), "untrusted": tr('○ 主机密钥待核验'),
+                "auth": tr('○ 认证失败'), "error": tr('○ 检测失败'),
+            }.get(state, tr('○ 未检测'))
+            ui(item.setText, 1, (tr('● 已连接') if connected else label))
             failed = not connected and state in {"unreachable", "untrusted", "auth", "error"}
             for column in (0, 1):
-                item.setToolTip(column, "" if connected else detail)
+                ui(item.setToolTip, column, "" if connected else detail)
                 item.setForeground(column, QBrush(QColor("#888888")) if failed else QBrush())
 
     def checked_aliases(self) -> list[str]:
@@ -316,7 +319,7 @@ class WorkerBrowser(QWidget):
             if self._focused is None:
                 self._focused = alias
             if not self.path_edit.text():
-                self.path_edit.setText(listing.path)
+                ui(self.path_edit.setText, listing.path)
         self.set_aliases([alias])
         self.render()
 
@@ -414,9 +417,9 @@ class WorkerBrowser(QWidget):
             self._merged_path = self.path_edit.text().strip()
             listing = self._listings.get(self._focused or "")
             if listing is not None:
-                self.path_edit.setText(listing.path)
+                ui(self.path_edit.setText, listing.path)
         elif self._merged_path:
-            self.path_edit.setText(self._merged_path)
+            ui(self.path_edit.setText, self._merged_path)
         self.render()
         if self._connected:
             self._browse_path()
@@ -446,10 +449,10 @@ class WorkerBrowser(QWidget):
         self._rendered_path = path
         if self.mode.currentIndex() == 1:
             aliases = [self._focused] if self._focused in self._connected else []
-            self.tree.setHeaderLabel(f"{self._focused or '间接节点'} 目录")
+            ui(self.tree.setHeaderLabel, tr('{0} 目录', f"{self._focused or tr('间接节点')}"))
         else:
             aliases = sorted(self._connected)
-            self.tree.setHeaderLabel("合并目录")
+            ui(self.tree.setHeaderLabel, tr('合并目录'))
         listings = {
             alias: self._listings[alias]
             for alias in aliases
@@ -465,17 +468,17 @@ class WorkerBrowser(QWidget):
             sizes = {entry.size for _, entry in entries}
             size = "" if is_dir or len(sizes) != 1 or sample.size is None else f"{sample.size:,}"
             suffix = posixpath.splitext(name)[1].lstrip(".").upper()
-            kind = "文件夹" if is_dir else "符号链接" if is_symlink else f"{suffix} 文件" if suffix else "文件"
+            kind = tr('文件夹') if is_dir else tr('符号链接') if is_symlink else tr('{0} 文件', f'{suffix}') if suffix else tr('文件')
             count = f"{len(entries)} / {len(aliases)}" if len(aliases) > 1 else entries[0][0]
-            difference = ("有节点未读取" if len(listings) < len(aliases)
-                          else "缺失" if len(entries) < len(listings)
-                          else "大小不同" if len(sizes) > 1 else "内容未校验")
+            difference = (tr('有节点未读取') if len(listings) < len(aliases)
+                          else tr('缺失') if len(entries) < len(listings)
+                          else tr('大小不同') if len(sizes) > 1 else tr('内容未校验'))
             if is_dir:
-                difference = "目录未递归核对" if len(aliases) > 1 else ""
+                difference = tr('目录未递归核对') if len(aliases) > 1 else ""
             elif is_symlink:
-                difference = "符号链接未核对" if len(aliases) > 1 else ""
+                difference = tr('符号链接未核对') if len(aliases) > 1 else ""
             if len(aliases) > 1 and len(listings) < len(aliases):
-                difference = "有节点未读取"
+                difference = tr('有节点未读取')
             if len(aliases) == 1:
                 difference = ""
             elif (path, name) in self._hash_results:
@@ -484,7 +487,7 @@ class WorkerBrowser(QWidget):
             row = self.table.rowCount()
             self.table.insertRow(row)
             for column, value in enumerate(values):
-                item = QTableWidgetItem(value)
+                item = ui(QTableWidgetItem, tr(value) if column == 4 else value)
                 if column == 0:
                     item.setIcon(self._folder_icon if is_dir else self._icons.for_filename(name))
                     if is_dir:
@@ -492,30 +495,30 @@ class WorkerBrowser(QWidget):
                 if column == 1:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 if column == 4 and (path, name) in self._hash_details:
-                    item.setToolTip(self._hash_details[(path, name)])
+                    ui(item.setToolTip, self._hash_details[(path, name)])
                 self.table.setItem(row, column, item)
         self._render_tree(path, groups)
-        self.summary.setText(
-            f"已连接 {len(self._connected)} 个节点；当前路径已读取 {len(listings)} 个。"
-            + (" 同名、同大小不代表内容相同。" if self.mode.currentIndex() == 0 else "")
+        ui(self.summary.setText,
+            tr('已连接 {0} 个节点；当前路径已读取 {1} 个。', f'{len(self._connected)}', f'{len(listings)}')
+            + (tr(' 同名、同大小不代表内容相同。') if self.mode.currentIndex() == 0 else "")
         )
 
     def _render_tree(self, path: str, groups: dict[tuple[str, bool, bool], list[tuple[str, RemoteEntry]]]) -> None:
         with QSignalBlocker(self.tree):
             self.tree.clear()
-            root = QTreeWidgetItem(self.tree, ["/"])
+            root = ui(QTreeWidgetItem, self.tree, ["/"])
             root.setIcon(0, self._folder_icon)
             root.setData(0, PATH_ROLE, "/")
             current = root
             current_path = ""
             for part in path.strip("/").split("/") if path and path != "/" else []:
                 current_path = posixpath.join(current_path, part)
-                current = QTreeWidgetItem(current, [part])
+                current = ui(QTreeWidgetItem, current, [part])
                 current.setIcon(0, self._folder_icon)
                 current.setData(0, PATH_ROLE, "/" + current_path.lstrip("/"))
             for (name, is_dir, _), _entries in sorted(groups.items()):
                 if is_dir:
-                    child = QTreeWidgetItem(current, [name])
+                    child = ui(QTreeWidgetItem, current, [name])
                     child.setIcon(0, self._folder_icon)
                     child.setData(0, PATH_ROLE, posixpath.join(path, name))
             item = current

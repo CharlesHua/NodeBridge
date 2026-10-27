@@ -22,6 +22,10 @@ The project is under active development. Multi-node operations and terminal broa
 
 项目仍在开发中。多节点操作和终端广播尚需在项目所有者的集群上实测；准确的实现范围见[当前状态](docs/CURRENT_STATUS.md)。
 
+The interface supports Simplified Chinese and English (View → Language; apply immediately). Log files and the built-in user guide retain their original language.
+
+界面支持简体中文和英文（查看 → 语言，立即生效）。日志文件和内置使用指南保持原来的语言。
+
 ## Run from source / 从源码运行
 
 Create the Python 3.12 environment from `environment.yml`, then run on Windows PowerShell:

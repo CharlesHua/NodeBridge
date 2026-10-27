@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from nodebridge.i18n import tr, ui
+
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
     QLabel, QLineEdit, QSpinBox, QVBoxLayout, QWidget,
@@ -23,32 +25,32 @@ class BatchDialog(QDialog):
     def __init__(self, aliases: list[str], available_aliases: list[str], source_counts: tuple[int, int, int],
                  paths: tuple[str, str, str], parent: QWidget | None = None):
         super().__init__(parent)
-        self.setWindowTitle("批量文件操作")
+        ui(self.setWindowTitle, tr('批量文件操作'))
         self.resize(530, 290)
         self._paths = paths
         self._aliases = aliases
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(f"已勾选间接节点：{', '.join(aliases) if aliases else '无'}"))
+        layout.addWidget(ui(QLabel, tr('已勾选间接节点：{0}', f"{(', '.join(aliases) if aliases else '无')}")))
         self.source_label = QLabel()
         layout.addWidget(self.source_label)
         form = QFormLayout()
         self.mode = QComboBox()
         for label, key in self.MODES:
-            self.mode.addItem(label, key)
-        form.addRow("方向：", self.mode)
+            ui(self.mode.addItem, tr(label), key)
+        form.addRow(tr('方向：'), self.mode)
         self.destination = QLineEdit()
-        form.addRow("目标目录：", self.destination)
+        form.addRow(tr('目标目录：'), self.destination)
         self.target_node = QComboBox()
-        self.target_node.addItems([alias for alias in available_aliases if alias not in aliases])
-        form.addRow("目标间接节点：", self.target_node)
-        self.move = QCheckBox("复制完整成功后删除来源（移动）")
+        ui(self.target_node.addItems, [alias for alias in available_aliases if alias not in aliases])
+        form.addRow(tr('目标间接节点：'), self.target_node)
+        self.move = ui(QCheckBox, tr('复制完整成功后删除来源（移动）'))
         form.addRow("", self.move)
         self.parallelism = QSpinBox()
         self.parallelism.setRange(1, 4)
         self.parallelism.setValue(4)
-        form.addRow("同时操作节点：", self.parallelism)
+        form.addRow(tr('同时操作节点：'), self.parallelism)
         layout.addLayout(form)
-        self.note = QLabel("同名文件将逐项询问；跳过或取消后不会删除来源。")
+        self.note = ui(QLabel, tr('同名文件将逐项询问；跳过或取消后不会删除来源。'))
         self.note.setWordWrap(True)
         layout.addWidget(self.note)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -69,12 +71,12 @@ class BatchDialog(QDialog):
             1 if mode.startswith("local_") else
             2 if mode.startswith("worker_") or mode == "delete_workers" else 0
         ]
-        self.source_label.setText(f"当前方向已选中 {count} 个文件或文件夹。")
+        ui(self.source_label.setText, tr('当前方向已选中 {0} 个文件或文件夹。', f'{count}'))
         target = self._paths[
             2 if mode in {"jump_to_local", "worker_to_local"} else
             0 if mode.endswith("to_workers") or mode in {"delete_workers", "worker_to_worker"} else 1
         ]
-        self.destination.setText(target)
+        ui(self.destination.setText, target)
         self.destination.setEnabled(mode != "delete_workers")
         self.target_node.setEnabled(mode == "worker_to_worker")
         self.move.setEnabled(mode != "delete_workers" and (len(self._aliases) == 1 or not mode.endswith("to_workers")))
@@ -82,8 +84,8 @@ class BatchDialog(QDialog):
             self.move.setChecked(False)
         if mode == "delete_workers":
             self.move.setChecked(False)
-            self.note.setText("删除将永久移除所选间接节点上的项目及其内容，无法撤销。")
+            ui(self.note.setText, tr('删除将永久移除所选间接节点上的项目及其内容，无法撤销。'))
         elif mode.endswith("to_workers") and len(self._aliases) > 1:
-            self.note.setText("向多个间接节点并行复制。暂不支持向多个节点移动；来源会保留。")
+            ui(self.note.setText, tr('向多个间接节点并行复制。暂不支持向多个节点移动；来源会保留。'))
         else:
-            self.note.setText("同名文件将逐项询问。移动只在完整复制成功且来源未变化后删除来源。")
+            ui(self.note.setText, tr('同名文件将逐项询问。移动只在完整复制成功且来源未变化后删除来源。'))

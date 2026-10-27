@@ -6,6 +6,14 @@ This file records user-visible changes. `Unreleased` describes work in the curre
 
 ## Unreleased / 未发布
 
+- Added exit confirmation for active site/terminal connections, with a minimize option that keeps connections alive. Startup can reconnect the last active sites and terminal groups after normal or forced exit; explicitly detached tmux sessions are excluded. Recovery snapshots contain no passwords or commands.
+
+- 新增活动站点／终端的退出确认，可选择最小化并保持连接。正常或强制退出后，启动时可询问重连上次活动站点和终端组；排除已主动分离的 tmux 会话。恢复快照不保存密码或命令。
+
+- Added Simplified Chinese/English interface selection with a saved preference that applies immediately, preserving live connections and terminal views. File logs and the built-in Chinese guide remain unchanged; commands, paths and server output are not translated. Portable builds now validate and compile Qt translation resources.
+
+- 新增简体中文／英文界面选择，保存设置后立即生效。文件日志和内置中文指南保持不变，命令、路径和服务器输出不翻译。绿色版构建会检查并编译 Qt 翻译资源。
+
 - Fixed the separate Windows whole-window disappearance on first terminal use: prepare the Qt graphics surface before showing the main window, using one persistent hidden, unloaded Qt Quick widget. This prevents the later Raster-to-Direct3D native-window recreation while keeping terminal pages lazy-loaded and the normal graphics backend unchanged.
 
 - 修复 Windows 首次使用终端时整个主窗口短暂消失的问题：显示主窗口前，通过一个常驻、隐藏且不加载内容的 Qt Quick 控件准备图形表面，避免首次插入终端时从普通绘制切换到 Direct3D 而重建原生窗口。终端页面仍按需加载，沿用原图形后端。

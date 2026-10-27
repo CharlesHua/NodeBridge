@@ -30,6 +30,10 @@ def main() -> None:
         log.write(f"NodeBridge portable build {run_id}\n".encode("utf-8"))
         log.flush()
         subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "update_translations.py")],
+            cwd=ROOT, check=True, env=env, stdout=log, stderr=subprocess.STDOUT,
+        )
+        subprocess.run(
             [sys.executable, "-m", "PyInstaller", "--clean", "--noconfirm",
              "--workpath", str(work_dir),
              "--distpath", str(bundle.parent), str(ROOT / "nodebridge.spec")],

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from nodebridge.i18n import tr, ui
+
 from dataclasses import replace
 
 from PySide6.QtCore import Qt
@@ -34,7 +36,7 @@ class SiteManagerDialog(QDialog):
         jump_available: bool = False, connect_available: bool = True,
     ):
         super().__init__(parent)
-        self.setWindowTitle("NodeBridge — 站点管理器")
+        ui(self.setWindowTitle, tr('NodeBridge — 站点管理器'))
         self.resize(900, 700)
         self.store = store
         try:
@@ -42,12 +44,11 @@ class SiteManagerDialog(QDialog):
         except LockedSiteStore:
             while True:
                 password, accepted = QInputDialog.getText(
-                    parent, "解锁站点密码", "请输入 NodeBridge 主密码：", QLineEdit.EchoMode.Password,
+                    parent, tr('解锁站点密码'), tr('请输入 NodeBridge 主密码：'), QLineEdit.EchoMode.Password,
                 )
                 if not accepted:
                     choice = QMessageBox.question(
-                        parent, "忘记主密码", "是否清除全部已保存密码并保留站点资料？\n"
-                        "清除后无法恢复原密码。选择“否”将取消打开站点管理器。",
+                        parent, tr('忘记主密码'), tr('是否清除全部已保存密码并保留站点资料？\n清除后无法恢复原密码。选择“否”将取消打开站点管理器。'),
                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                         QMessageBox.StandardButton.No,
                     )
@@ -61,7 +62,7 @@ class SiteManagerDialog(QDialog):
                     self.sites = store.load()
                     break
                 except ValueError as exc:
-                    QMessageBox.warning(parent, "解锁失败", str(exc))
+                    QMessageBox.warning(parent, tr('解锁失败'), str(exc))
         self.selected_site: Site | None = None
         self.connection_password: str | None = None
         self._editing_id: str | None = None
@@ -73,10 +74,10 @@ class SiteManagerDialog(QDialog):
 
         left = QWidget()
         left_layout = QVBoxLayout(left)
-        left_layout.addWidget(QLabel("我的站点"))
+        left_layout.addWidget(ui(QLabel, tr('我的站点')))
         self.site_list = QListWidget()
         for site in self.sites:
-            self.site_list.addItem(site.name)
+            ui(self.site_list.addItem, site.name)
         self.site_list.currentRowChanged.connect(self._select_row)
         left_layout.addWidget(self.site_list, 1)
         site_actions = QHBoxLayout()
@@ -85,7 +86,7 @@ class SiteManagerDialog(QDialog):
             ("复制", self._duplicate_site),
             ("删除", self._delete_site),
         ):
-            button = QPushButton(label)
+            button = ui(QPushButton, tr(label))
             button.clicked.connect(callback)
             site_actions.addWidget(button)
         left_layout.addLayout(site_actions)
@@ -103,31 +104,31 @@ class SiteManagerDialog(QDialog):
         self.key_edit = QLineEdit()
         self.password_edit = QLineEdit()
         self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        form.addRow("站点名称", self.name_edit)
-        form.addRow("协议", QLabel("SFTP - SSH File Transfer Protocol"))
-        form.addRow("主机（IP 或域名）", self.host_edit)
-        form.addRow("端口", self.port_edit)
-        form.addRow("用户", self.user_edit)
-        form.addRow("私钥路径（可选）", self.key_edit)
-        form.addRow("密码", self.password_edit)
-        self.auto_connect = QCheckBox("打开软件时自动连接此站点")
-        self.auto_connect.setToolTip("只能选择一个启动站点；选择此站点将替换原选择。")
-        form.addRow("启动连接", self.auto_connect)
+        form.addRow(tr('站点名称'), self.name_edit)
+        form.addRow(tr('协议'), ui(QLabel, "SFTP - SSH File Transfer Protocol"))
+        form.addRow(tr('主机（IP 或域名）'), self.host_edit)
+        form.addRow(tr('端口'), self.port_edit)
+        form.addRow(tr('用户'), self.user_edit)
+        form.addRow(tr('私钥路径（可选）'), self.key_edit)
+        form.addRow(tr('密码'), self.password_edit)
+        self.auto_connect = ui(QCheckBox, tr('打开软件时自动连接此站点'))
+        ui(self.auto_connect.setToolTip, tr('只能选择一个启动站点；选择此站点将替换原选择。'))
+        form.addRow(tr('启动连接'), self.auto_connect)
         right_layout.addLayout(form)
-        discovery_box = QGroupBox("间接节点发现（在直连服务器上读取）")
+        discovery_box = ui(QGroupBox, tr('间接节点发现（在直连服务器上读取）'))
         discovery_form = QFormLayout(discovery_box)
         defaults = DiscoverySettings()
-        self.discover_hosts = QCheckBox("从远程 hosts 文件读取")
-        self.discover_ssh = QCheckBox("从远程 SSH 配置读取（含 Include）")
+        self.discover_hosts = ui(QCheckBox, tr('从远程 hosts 文件读取'))
+        self.discover_ssh = ui(QCheckBox, tr('从远程 SSH 配置读取（含 Include）'))
         self.hosts_path = QLineEdit(defaults.hosts_path)
         self.ssh_user_path = QLineEdit(defaults.ssh_user_path)
         self.ssh_system_path = QLineEdit(defaults.ssh_system_path)
         discovery_form.addRow(self.discover_hosts)
-        discovery_form.addRow("hosts 路径", self.hosts_path)
+        discovery_form.addRow(tr('hosts 路径'), self.hosts_path)
         discovery_form.addRow(self.discover_ssh)
-        discovery_form.addRow("用户 SSH 配置", self.ssh_user_path)
-        discovery_form.addRow("系统 SSH 配置", self.ssh_system_path)
-        discovery_note = QLabel("路径为远程绝对路径或 ~/ 开头；SSH 配置路径可留空以忽略该项。保存后重新连接站点生效。")
+        discovery_form.addRow(tr('用户 SSH 配置'), self.ssh_user_path)
+        discovery_form.addRow(tr('系统 SSH 配置'), self.ssh_system_path)
+        discovery_note = ui(QLabel, tr('路径为远程绝对路径或 ~/ 开头；SSH 配置路径可留空以忽略该项。保存后重新连接站点生效。'))
         discovery_note.setWordWrap(True)
         discovery_form.addRow(discovery_note)
         self.discover_hosts.toggled.connect(self._update_discovery_fields)
@@ -136,19 +137,19 @@ class SiteManagerDialog(QDialog):
         password_options = QHBoxLayout()
         self.password_mode = QComboBox()
         for label, mode in (("保存密码（明文）", "plain"), ("使用主密码加密", "master"), ("不保存密码", "none")):
-            self.password_mode.addItem(label, mode)
+            ui(self.password_mode.addItem, tr(label), mode)
         self.password_mode.setCurrentIndex(self.password_mode.findData(store.mode))
         self.password_mode.currentIndexChanged.connect(self._update_password_mode)
-        password_options.addWidget(QLabel("密码保存："))
+        password_options.addWidget(ui(QLabel, tr('密码保存：')))
         password_options.addWidget(self.password_mode, 1)
-        self.change_master_button = QPushButton("更换主密码…")
+        self.change_master_button = ui(QPushButton, tr('更换主密码…'))
         self.change_master_button.clicked.connect(self._request_master_change)
         password_options.addWidget(self.change_master_button)
         right_layout.addLayout(password_options)
         self.password_note = QLabel()
         self.password_note.setWordWrap(True)
         right_layout.addWidget(self.password_note)
-        storage_location = QLabel(f"站点资料：{store.path}")
+        storage_location = ui(QLabel, tr('站点资料：{0}', f'{store.path}'))
         storage_location.setWordWrap(True)
         storage_location.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         right_layout.addWidget(storage_location)
@@ -159,12 +160,12 @@ class SiteManagerDialog(QDialog):
 
         bottom = QHBoxLayout()
         bottom.addStretch()
-        connect_button = QPushButton("经当前站点连接" if jump_available else "连接")
+        connect_button = ui(QPushButton, (tr('经当前站点连接') if jump_available else tr('连接')))
         connect_button.setEnabled(connect_available)
         connect_button.clicked.connect(self._connect_site)
-        save_button = QPushButton("保存")
+        save_button = ui(QPushButton, tr('保存'))
         save_button.clicked.connect(self._save_and_close)
-        cancel_button = QPushButton("取消")
+        cancel_button = ui(QPushButton, tr('取消'))
         cancel_button.clicked.connect(self.reject)
         bottom.addWidget(connect_button)
         bottom.addWidget(save_button)
@@ -178,25 +179,25 @@ class SiteManagerDialog(QDialog):
     def _update_password_mode(self) -> None:
         mode = self.password_mode.currentData()
         self.change_master_button.setEnabled(mode == "master" and self.store.mode == "master")
-        self.password_note.setText({
-            "plain": "密码将明文保存在站点资料中；请勿分享该文件。",
-            "master": "密码经主密码加密后保存；忘记主密码将无法恢复已保存密码。",
-            "none": "密码不会写入磁盘；连接时需要重新输入。",
+        ui(self.password_note.setText, {
+            "plain": tr('密码将明文保存在站点资料中；请勿分享该文件。'),
+            "master": tr('密码经主密码加密后保存；忘记主密码将无法恢复已保存密码。'),
+            "none": tr('密码不会写入磁盘；连接时需要重新输入。'),
         }[mode])
 
     def _request_master_change(self) -> None:
         self._change_master = True
-        QMessageBox.information(self, "更换主密码", "保存站点资料时将要求输入新主密码。")
+        QMessageBox.information(self, tr('更换主密码'), tr('保存站点资料时将要求输入新主密码。'))
 
     def _new_master_password(self) -> str | None:
-        first, accepted = QInputDialog.getText(self, "设置主密码", "输入新主密码：", QLineEdit.EchoMode.Password)
+        first, accepted = QInputDialog.getText(self, tr('设置主密码'), tr('输入新主密码：'), QLineEdit.EchoMode.Password)
         if not accepted:
             return None
-        second, accepted = QInputDialog.getText(self, "设置主密码", "再次输入主密码：", QLineEdit.EchoMode.Password)
+        second, accepted = QInputDialog.getText(self, tr('设置主密码'), tr('再次输入主密码：'), QLineEdit.EchoMode.Password)
         if not accepted:
             return None
         if not first or first != second:
-            QMessageBox.warning(self, "设置主密码", "主密码不能为空，且两次输入必须一致。")
+            QMessageBox.warning(self, tr('设置主密码'), tr('主密码不能为空，且两次输入必须一致。'))
             return None
         return first
 
@@ -239,7 +240,7 @@ class SiteManagerDialog(QDialog):
                 if updated.auto_connect:
                     self.sites = [other if other.id == updated.id else replace(other, auto_connect=False)
                                   for other in self.sites]
-                self.site_list.item(index).setText(updated.name)
+                ui(self.site_list.item(index).setText, updated.name)
                 break
 
     def _select_row(self, row: int) -> None:
@@ -251,24 +252,24 @@ class SiteManagerDialog(QDialog):
             return
         site = self.sites[row]
         self._editing_id = site.id
-        self.name_edit.setText(site.name)
-        self.host_edit.setText(site.host)
+        ui(self.name_edit.setText, site.name)
+        ui(self.host_edit.setText, site.host)
         self.port_edit.setValue(site.port)
-        self.user_edit.setText(site.username)
-        self.key_edit.setText(site.key_file)
-        self.password_edit.setText(site.password)
+        ui(self.user_edit.setText, site.username)
+        ui(self.key_edit.setText, site.key_file)
+        ui(self.password_edit.setText, site.password)
         self.auto_connect.setChecked(site.auto_connect)
         self.discover_hosts.setChecked(site.discovery.hosts_enabled)
-        self.hosts_path.setText(site.discovery.hosts_path)
+        ui(self.hosts_path.setText, site.discovery.hosts_path)
         self.discover_ssh.setChecked(site.discovery.ssh_enabled)
-        self.ssh_user_path.setText(site.discovery.ssh_user_path)
-        self.ssh_system_path.setText(site.discovery.ssh_system_path)
+        ui(self.ssh_user_path.setText, site.discovery.ssh_user_path)
+        ui(self.ssh_system_path.setText, site.discovery.ssh_system_path)
         self._set_form_enabled(True)
 
     def _new_site(self) -> None:
         site = Site.create()
         self.sites.append(site)
-        self.site_list.addItem(site.name)
+        ui(self.site_list.addItem, site.name)
         self.site_list.setCurrentRow(len(self.sites) - 1)
         self.name_edit.selectAll()
         self.name_edit.setFocus()
@@ -281,7 +282,7 @@ class SiteManagerDialog(QDialog):
         original = self.sites[row]
         clone = replace(original, id=Site.create().id, name=f"{original.name} 副本", auto_connect=False)
         self.sites.append(clone)
-        self.site_list.addItem(clone.name)
+        ui(self.site_list.addItem, clone.name)
         self.site_list.setCurrentRow(len(self.sites) - 1)
 
     def _delete_site(self) -> None:
@@ -289,7 +290,7 @@ class SiteManagerDialog(QDialog):
         if row < 0:
             return
         site = self.sites[row]
-        answer = QMessageBox.question(self, "删除站点", f"删除站点“{site.name}”？")
+        answer = QMessageBox.question(self, tr('删除站点'), tr('删除站点“{0}”？', f'{site.name}'))
         if answer != QMessageBox.StandardButton.Yes:
             return
         self._editing_id = None
@@ -307,16 +308,16 @@ class SiteManagerDialog(QDialog):
             paths = []
             if settings.hosts_enabled:
                 if not settings.hosts_path:
-                    QMessageBox.warning(self, "节点发现路径", f"站点“{site.name}”的 hosts 路径不能为空。")
+                    QMessageBox.warning(self, tr('节点发现路径'), tr('站点“{0}”的 hosts 路径不能为空。', f'{site.name}'))
                     return False
                 paths.append(settings.hosts_path)
             if settings.ssh_enabled:
                 paths.extend(path for path in (settings.ssh_user_path, settings.ssh_system_path) if path)
                 if not settings.ssh_user_path and not settings.ssh_system_path:
-                    QMessageBox.warning(self, "节点发现路径", f"站点“{site.name}”须至少填写一个 SSH 配置路径。")
+                    QMessageBox.warning(self, tr('节点发现路径'), tr('站点“{0}”须至少填写一个 SSH 配置路径。', f'{site.name}'))
                     return False
             if any(not path.startswith(("/", "~/")) for path in paths):
-                QMessageBox.warning(self, "节点发现路径", f"站点“{site.name}”须使用远程绝对路径或 ~/ 开头的路径。")
+                QMessageBox.warning(self, tr('节点发现路径'), tr('站点“{0}”须使用远程绝对路径或 ~/ 开头的路径。', f'{site.name}'))
                 return False
         mode = self.password_mode.currentData()
         master_password = None
@@ -329,7 +330,7 @@ class SiteManagerDialog(QDialog):
             self._change_master = False
             return True
         except (OSError, ValueError) as exc:
-            QMessageBox.warning(self, "站点保存失败", str(exc))
+            QMessageBox.warning(self, tr('站点保存失败'), str(exc))
             return False
 
     def _save_and_close(self) -> None:
@@ -340,11 +341,11 @@ class SiteManagerDialog(QDialog):
         self._commit_form()
         row = self.site_list.currentRow()
         if row < 0:
-            QMessageBox.warning(self, "NodeBridge", "请先选择站点。")
+            QMessageBox.warning(self, "NodeBridge", tr('请先选择站点。'))
             return
         site = self.sites[row]
         if not site.host or not site.username:
-            QMessageBox.warning(self, "NodeBridge", "请填写主机和用户名。")
+            QMessageBox.warning(self, "NodeBridge", tr('请填写主机和用户名。'))
             return
         if not self._persist():
             return
@@ -352,7 +353,7 @@ class SiteManagerDialog(QDialog):
         password = site.password
         if self.store.mode == "none" and not password and not site.key_file:
             password, accepted = QInputDialog.getText(
-                self, "站点密码", f"请输入“{site.name}”的连接密码：", QLineEdit.EchoMode.Password,
+                self, tr('站点密码'), tr('请输入“{0}”的连接密码：', f'{site.name}'), QLineEdit.EchoMode.Password,
             )
             if not accepted:
                 self.selected_site = None

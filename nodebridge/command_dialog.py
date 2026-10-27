@@ -1,5 +1,7 @@
 """Editable command snippets, persisted with the application's settings."""
 
+from nodebridge.i18n import tr, ui
+
 import json
 
 from PySide6.QtCore import Qt
@@ -38,11 +40,11 @@ def load_commands(settings):
 class CommandManagerDialog(QDialog):
     def __init__(self, commands, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("常用命令管理")
+        ui(self.setWindowTitle, tr('常用命令管理'))
         self.resize(700, 420)
         layout = QVBoxLayout(self)
         self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["显示", "命令（单行）", "功能介绍（可选）"])
+        ui(self.table.setHorizontalHeaderLabels, [tr('显示'), tr('命令（单行）'), tr('功能介绍（可选）')])
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.table.setColumnWidth(0, 55)
@@ -50,17 +52,17 @@ class CommandManagerDialog(QDialog):
         for item in commands:
             self.add_command(item)
         row = QHBoxLayout()
-        add = QPushButton("添加命令")
+        add = ui(QPushButton, tr('添加命令'))
         add.clicked.connect(lambda: self.add_command())
-        remove = QPushButton("删除选中命令")
+        remove = ui(QPushButton, tr('删除选中命令'))
         remove.clicked.connect(self.remove_selected)
         row.addWidget(add)
         row.addWidget(remove)
         row.addStretch()
         layout.addLayout(row)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
-        buttons.button(QDialogButtonBox.StandardButton.Save).setText("保存")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        ui(buttons.button(QDialogButtonBox.StandardButton.Save).setText, tr('保存'))
+        ui(buttons.button(QDialogButtonBox.StandardButton.Cancel).setText, tr('取消'))
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -73,8 +75,8 @@ class CommandManagerDialog(QDialog):
         check.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsUserCheckable)
         check.setCheckState(Qt.CheckState.Checked if item["visible"] else Qt.CheckState.Unchecked)
         self.table.setItem(row, 0, check)
-        self.table.setItem(row, 1, QTableWidgetItem(item["command"]))
-        self.table.setItem(row, 2, QTableWidgetItem(item["description"]))
+        self.table.setItem(row, 1, ui(QTableWidgetItem, item["command"]))
+        self.table.setItem(row, 2, ui(QTableWidgetItem, item["description"]))
         self.table.setCurrentCell(row, 1)
 
     def remove_selected(self):
@@ -89,9 +91,9 @@ class CommandManagerDialog(QDialog):
 
     def accept(self):
         if any(not item["command"].strip() for item in self.commands()):
-            QMessageBox.warning(self, "常用命令", "命令不能为空；请填写或删除空白行。")
+            QMessageBox.warning(self, tr('常用命令'), tr('命令不能为空；请填写或删除空白行。'))
             return
         if any(any(c in item["command"] for c in "\r\n\x00") for item in self.commands()):
-            QMessageBox.warning(self, "常用命令", "常用命令请填写单行文本，多行内容请使用广播输入框。")
+            QMessageBox.warning(self, tr('常用命令'), tr('常用命令请填写单行文本，多行内容请使用广播输入框。'))
             return
         super().accept()

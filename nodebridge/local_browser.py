@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from nodebridge.i18n import tr, ui
+
 from pathlib import Path
 
 from PySide6.QtCore import QDir, QModelIndex, Qt, Signal
@@ -36,11 +38,11 @@ class LocalFileModel(QFileSystemModel):
                 return "" if self.isDir(index) else f"{self.size(index):,}"
             if index.column() == 2:
                 if self.isDir(index):
-                    return "文件夹"
+                    return tr('文件夹')
                 if self.fileInfo(index).isSymLink():
-                    return "符号链接"
+                    return tr('符号链接')
                 suffix = Path(self.fileName(index)).suffix.lstrip(".").upper()
-                return f"{suffix} 文件" if suffix else "文件"
+                return tr('{0} 文件', f'{suffix}') if suffix else tr('文件')
             if index.column() == 3:
                 return self.fileInfo(index).lastModified().toString("yyyy-MM-dd HH:mm")
         if role == Qt.ItemDataRole.DecorationRole and index.column() == 0 and not self.isDir(index):
@@ -52,7 +54,7 @@ class LocalFileModel(QFileSystemModel):
             return Qt.AlignmentFlag.AlignCenter
         if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
             if 0 <= section < len(self.HEADERS):
-                return self.HEADERS[section]
+                return tr(self.HEADERS[section])
         return super().headerData(section, orientation, role)
 
 
@@ -71,14 +73,14 @@ class LocalBrowser(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
         address = QHBoxLayout()
-        address.addWidget(QLabel("本地站点:"))
+        address.addWidget(ui(QLabel, tr('本地站点:')))
         self.path_edit = QLineEdit()
         self.path_edit.returnPressed.connect(self._open_address)
         address.addWidget(self.path_edit, 1)
-        self.up_button = QPushButton("上一级")
+        self.up_button = ui(QPushButton, tr('上一级'))
         self.up_button.clicked.connect(self._up)
         address.addWidget(self.up_button)
-        self.refresh_button = QPushButton("刷新")
+        self.refresh_button = ui(QPushButton, tr('刷新'))
         self.refresh_button.clicked.connect(self.refresh)
         address.addWidget(self.refresh_button)
         layout.addLayout(address)
@@ -130,12 +132,12 @@ class LocalBrowser(QWidget):
     def navigate(self, path: str) -> bool:
         candidate = Path(path).expanduser()
         if not candidate.is_dir():
-            QMessageBox.warning(self, "NodeBridge", f"本地目录不存在或无法访问：\n{path}")
-            self.path_edit.setText(self._path)
+            QMessageBox.warning(self, "NodeBridge", tr('本地目录不存在或无法访问：\n{0}', f'{path}'))
+            ui(self.path_edit.setText, self._path)
             return False
         resolved = str(candidate.resolve())
         self._path = resolved
-        self.path_edit.setText(resolved)
+        ui(self.path_edit.setText, resolved)
         self.table.setRootIndex(self.file_model.setRootPath(resolved))
         index = self.directory_model.index(resolved)
         if index.isValid():

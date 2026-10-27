@@ -1,4 +1,6 @@
 """Persistent terminal inventory; all interactive terminal input stays elsewhere."""
+
+from nodebridge.i18n import tr, ui
 import json
 
 from PySide6.QtCore import QItemSelectionModel, QSignalBlocker, Qt, Signal
@@ -20,14 +22,14 @@ class TasksWorkspace(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self)
-        note = QLabel("持久终端会话清单：断开软件后可恢复；会话可用不代表计算任务已经成功完成。终端输入及广播在“终端”页。支持 Ctrl／Shift 多选会话。")
+        note = ui(QLabel, tr('持久终端会话清单：断开软件后可恢复；会话可用不代表计算任务已经成功完成。终端输入及广播在“终端”页。支持 Ctrl／Shift 多选会话。'))
         note.setWordWrap(True)
         layout.addWidget(note)
         row = QHBoxLayout()
-        self.scan_button = QPushButton("扫描／刷新当前站点")
-        self.restore_button = QPushButton("恢复到终端")
-        self.detach_button = QPushButton("分离本机连接")
-        self.terminate_button = QPushButton("结束远程会话…")
+        self.scan_button = ui(QPushButton, tr('扫描／刷新当前站点'))
+        self.restore_button = ui(QPushButton, tr('恢复到终端'))
+        self.detach_button = ui(QPushButton, tr('分离本机连接'))
+        self.terminate_button = ui(QPushButton, tr('结束远程会话…'))
         self.scan_button.clicked.connect(self.scanRequested)
         row.addWidget(self.scan_button)
         for button, signal in ((self.restore_button, self.restoreRequested),
@@ -38,7 +40,7 @@ class TasksWorkspace(QWidget):
         row.addStretch()
         layout.addLayout(row)
         self.table = QTableWidget(0, 8)
-        self.table.setHorizontalHeaderLabels(["直连站点", "节点", "终端组", "会话", "状态", "目录", "前台程序", "创建时间"])
+        ui(self.table.setHorizontalHeaderLabels, [tr('直连站点'), tr('节点'), tr('终端组'), tr('会话'), tr('状态'), tr('目录'), tr('前台程序'), tr('创建时间')])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -52,7 +54,7 @@ class TasksWorkspace(QWidget):
         self.table.itemSelectionChanged.connect(self._selection_changed)
         self.table.itemDoubleClicked.connect(lambda _item: self._emit_selected(self.restoreRequested))
         layout.addWidget(self.table, 1)
-        self.summary = QLabel("连接直连站点后可扫描服务器上的 nodebridge- 会话；本地记录丢失也可重新发现。")
+        self.summary = ui(QLabel, tr('连接直连站点后可扫描服务器上的 nodebridge- 会话；本地记录丢失也可重新发现。'))
         self.summary.setWordWrap(True)
         layout.addWidget(self.summary)
         self._records = {}
@@ -95,7 +97,7 @@ class TasksWorkspace(QWidget):
     def set_scanning(self, scanning):
         self._scanning = scanning
         self.scan_button.setEnabled(self._connected and not scanning)
-        self.scan_button.setText("正在扫描…" if scanning else "扫描／刷新当前站点")
+        ui(self.scan_button.setText, (tr('正在扫描…') if scanning else tr('扫描／刷新当前站点')))
 
     def set_records(self, records):
         from datetime import datetime
@@ -110,14 +112,14 @@ class TasksWorkspace(QWidget):
             try:
                 created_text = datetime.fromtimestamp(created).strftime("%Y-%m-%d %H:%M:%S") if created else ""
             except (ValueError, OSError, TypeError, OverflowError):
-                created_text = "未知"
+                created_text = tr("未知")
             values = [f"{record['user']}@{record['host']}:{record['port']}", record["node"],
                       record.get("label", ""), record["name"], record.get("state", "待检查"),
                       record.get("path", ""), record.get("command", ""),
                       created_text]
             for column, value in enumerate(values):
-                item = QTableWidgetItem(str(value))
-                item.setToolTip(str(value) if column != 4 else record.get("detail", str(value)))
+                item = ui(QTableWidgetItem, tr(str(value)) if column == 4 else str(value))
+                ui(item.setToolTip, str(value) if column != 4 else tr(record.get("detail", str(value))))
                 if column == 0:
                     item.setData(Qt.ItemDataRole.UserRole, record["key"])
                 self.table.setItem(row, column, item)

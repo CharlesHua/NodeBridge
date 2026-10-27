@@ -1,5 +1,13 @@
 # Developer guide / 开发者指南
 
+Exit confirmation and opt-in startup connection recovery are implemented; see [RECOVERY.md](RECOVERY.md) for persistence, credential handling and limitations. Live SSH and forced-exit Windows acceptance remain pending.
+
+已实现退出确认和经用户确认的启动连接恢复；持久记录、认证处理及限制见 [RECOVERY.md](RECOVERY.md)。仍待真实 SSH 和 Windows 强制退出验收。
+
+Simplified Chinese and English interfaces are available through View → Language (applies immediately). File logs and the built-in Chinese guide remain unchanged. See [I18N.md](I18N.md) for translation boundaries and maintenance. Portable rebuilding and live UI acceptance remain pending.
+
+现可通过“查看 → 语言”选择简体中文或英文界面（立即生效）。文件日志和内置中文指南保持不变。翻译边界和维护方式见 [I18N.md](I18N.md)；仍待重新构建绿色版及实机界面验收。
+
 For the optional tmux backend, session ownership, protocol adapter and opt-in live tests, read [TMUX.md](TMUX.md). The Tasks tab currently inventories persistent terminal sessions; the full computation/file workflow workspace remains planned.
 
 可选 tmux 后端、会话生命周期、协议适配及显式启用的实测见 [TMUX.md](TMUX.md)。“任务”页当前管理持久终端会话；完整计算／文件流程工作区仍在规划中。
